@@ -1,0 +1,2132 @@
+---
+title: "Aqueous Biotransformer Salmon Analysis"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '6'
+    toc_float: true
+    number_sections: true
+    code_folding: hide
+---
+<style>
+div.blue { background-color:#e6f0ff; border-radius: 5px; padding: 10px;}
+</style>
+<div class = "blue">
+**Background**
+Need to run the "aqueous_setting_names.Rmd" code file first before using this code file.
+
+* Summary:
+  + There are 31 predicted salmon metabolites.
+  + There are 2 metabolites that had more than 75% total missing, and thus they were excluded from further analysis. 
+  + There are 11 Health Outcomes that we are interested in: SBP, DBP, Insulin, Chol_T, TG, LDL, HDL, CRP, ApoB, HDL/LDL, Chol_T/HDL.
+  + There are 41 individual who participated in this study, in which there were 28 females and 11 males.
+
+* There are 3 goals that we are trying answer:
+  + Goal 1: Do we detect more or higher quantity of predicted salmon metabolites after consuming Mediterranean diet.
+  + Goal 2: Is there a relationship between change in predicted salmon metabolites and health outcomes cross-sectionally.
+  + Goal 3: Is there a relationship between change in predicted salmon metabolites and change in health outcomes after consuming Mediterranean diet.
+
+* Analysis done:
+  + Association between Health outcomes and Metabolites Using Linear Mixed Model(LMM).***Goal 2***
+  + Stratified analysis based on Time (pre and post) for Health Outcomes and Metabolites by using LMM.***Goal 2***
+  + Stratified analysis based on Period (pre 1, post 1, pre 2, post 2) for Health Outcomes and Metabolites by using Linear Model (LM).***Goal 2***
+  + Checking for influential points in HDL and M.1, which meets the FDR threshold for pre but fails p-value in post using Cook's Distance.
+  + Association between Health Outcomes and sum of Metabolites by using LMM.
+  + Association between change(post - pre) in Health Outcomes and change(post - pre) in Metabolites by using LMM. ***Goal 3***
+  + Association between the change in ranks of Metabolite by using LMM. ***Goal 1***
+      + First formula is without covariates, which is the primary analysis.
+      + Second formula is with covariates, in which covariates of "Age" and "Sex" are scaled.
+  + Stratified analysis based on Sex(Male and Female) for change in metabolite using both formulas mentioned above.***Goal 1***
+  + Association between change in Health Outcomes and sum of change in Metabolite by using LMM.***Goal 3***
+  + Association between the sum of change in ranks of Metabolite by using LMM.***Goal 3***
+      + First formula is without covariates, which is the primary analysis.
+      + Second formula is with covariates, in which covariates of "Age" and "Sex" are scaled.
+
+
+</div>
+
+# Data Prep
+### Libraries
+Requires the following packages: "dplyr", "ggplot2", "lmerTest", "stringr", "DT", "data.table", "faraway", and "plotly"
+```{r message=FALSE}
+## Install the following packages 
+##install.packages("ggplot2")
+##install.packages("lmerTest")
+##install.packages("stringr")
+##install.packages("DT")
+##install.packages("faraway")
+library(dplyr)
+library(ggplot2)
+library(lmerTest)
+library(stringr)
+library(DT)
+library(data.table)
+library(faraway)
+library(plotly)
+library(cowplot)
+library(htmlwidgets)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "/Users/sakaizarasolofomananarajery/Desktop/Research/Hendriks Folder/Biotransformers/")
+```
+
+Insert Targeted Health Outcomes and constant to multiply the IQR 
+```{r}
+outcomes <- c("SBP_total","DBP_total","Insulin","Chol_T","TG","LDL","HDL","CRP","ApoB","HDL_LDL","Chol_T_HDL")
+constant_IQR <- 1.5
+foodtype <- "salmon"
+datatype <- "aqueous_bio"
+file.name <- paste(foodtype, datatype, sep = "_")
+print(outcomes)
+```
+
+### Reading in Data
+``` {r}
+## Read in Targeted File as "food", and health files
+food <- as.data.frame(read.table(paste("./merged_file_",file.name,".txt",sep = ""),check.names=F, header = T))
+
+diff_in_health_outcome <- read.table(file=paste("./health_outcome_",file.name,".txt",sep = ""),header=T)
+complete_health_outcome <- read.table(file=paste("./complete_health_outcome_",file.name,".txt",sep=""),header=T)
+
+datatable(as.data.frame(food),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50,100)),
+          class="cell-border stripe", caption="Original Salmon Dataset")
+
+write.csv(food, paste("./food_table/Biotransformers_Dataset_", file.name,".csv",sep = ""), row.names=F)
+```
+
+Assigning Metabolite Names Such as: "M.1", "M.2", ... to predicted aqueous Salmon compounds
+```{r}
+metabolite_info <- as.data.frame(read.table(paste("./met_info_",file.name,".txt",sep=""),header=T))
+
+Metabolite <- paste("M.",1:nrow(metabolite_info), sep = "")
+metabolite_info <- cbind(Metabolite,metabolite_info)
+
+datatable(as.data.frame(metabolite_info),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50)),
+          class="cell-border stripe", caption="Summary Information for Metabolites")
+
+write.csv(metabolite_info, paste("./food_table/Metabolite_Information_",file.name,".csv",sep=""), row.names=F)
+
+## Naming Columns for "food" 
+colnames(food)[10:ncol(food)] <- Metabolite
+#na_df <- food[,Metabolite][rowSums(is.na(food[,Metabolite])) > 0,]
+food <-  food[complete.cases(food[,Metabolite]),]
+
+
+```
+
+# Calculating Absence(missing) Values of Metabolites 
+Total Sum and Percent Missing for Each of "Total", "Post" and "Pre" Interventions are Calculated. If a Value in "food" is 1, That is Missing
+```{r}
+## Calculating Missing in "Post" and "Pre"
+intervention_time <- c("Post","Pre")
+missing_interv <- percent_missing_interv <- data.frame(matrix(ncol=length(Metabolite),nrow=length(intervention_time)))
+      
+for(i in 1:length(intervention_time)){
+  missing_interv[i,] <- as.vector(colSums(food[grepl(intervention_time[i], food$StudyID),Metabolite]==1, na.rm = T))
+  rownames(missing_interv)[i] <- paste0("missing_",intervention_time[i])
+  percent_missing_interv[i,] <- (missing_interv[i,]/(sum(grepl(intervention_time[i], food$StudyID))))*100
+  rownames(percent_missing_interv)[i] <- paste0("percent_missing_",intervention_time[i])
+}
+
+results_test <- rbind(missing_interv, percent_missing_interv)
+colnames(results_test) <- Metabolite
+
+## Calculating Total Missing 
+total_missing_interv <- as.vector(colSums(food[!grepl("QC", food$StudyID),Metabolite]==1,na.rm=T))
+percent_total_missing_interv <- (total_missing_interv/(sum(!grepl("QC", food$StudyID))))*100
+results_total <- as.data.frame(rbind(total_missing_interv, percent_total_missing_interv))
+colnames(results_total) <- Metabolite
+
+## Binding Calculated Missing to Main Data
+missing_summary <- as.data.frame(t(rbind(results_test, results_total))) 
+missing_summary <- missing_summary[,c("missing_Pre","percent_missing_Pre","missing_Post","percent_missing_Post",
+                                    "total_missing_interv","percent_total_missing_interv")]
+
+## Showing four significant digits
+missing_summary <- round(missing_summary,digits = 4)
+
+missing_summary$Metabolite <- rownames(missing_summary)
+missing_summary <- merge(missing_summary,metabolite_info,by="Metabolite")
+
+correct_ord <- missing_summary$Metabolite[order(nchar(missing_summary$Metabolite),missing_summary$Metabolite)]
+missing_summary <- missing_summary[match(correct_ord,missing_summary$Metabolite),]
+```
+      
+### Removing Metabolites With More Than 75% Total Missing 
+Removed 2 Metabolites 31, and 29 Which had a Total Missing more than 75%
+```{r}
+Metabolite <- missing_summary$Metabolite[missing_summary$percent_total_missing_interv < 75]
+missing_summary <- missing_summary[missing_summary$percent_total_missing_interv < 75,]
+
+datatable(as.data.frame(missing_summary),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50)),
+          class="cell-border stripe", caption="Summary of Missing Calculations After Removing Metabolite wiht More Than 75% Missing")
+
+write.csv(missing_summary, paste("./food_table/Summary_Missing_less_75_Percent_",file.name,".csv",sep = ""), row.names=F)
+```
+
+### GGPLOTs for Metabolites with More than 25% Presence 
+These Plots Help to Answer our First Goal, Which is If We detect predicted Salmon Metabolites in More People After Consuming Mediterranean Diet
+
+#### Plot Comparing Percent of Metabolite Detected in Pre vs Post
+This Plot Looks at % Metabolite Detection in "Pre", vs "Post". Which Shows Most Metabolites are Below the x=y Line, Indicating That After Consumption of Salmon There Were More Metabolites Present Compared to "Pre" Intervention. 
+```{r}
+ggplot(missing_summary, aes((100-percent_missing_Post), (100-percent_missing_Pre)))+
+  geom_point(color="#D55E00") + geom_abline(alpha=0.4, color="#000000")+ geom_count()+ 
+  labs(title= "% Detected of metabolite in Pre and Post", y="Pre % Detected", x = "Post % Detected")+
+  theme_bw()
+```
+      
+#### Plot Comparing Number of Presence Based on Pre vs Post
+This Plot Compares Presence for Each Metabolite Based on Pre vs Post. This Plot Shows That predicted Salmon Metabolites had a Higher Presence in "Post", Indicating Salmon Metabolites were Often Seen After Consumption of Salmon
+```{r}
+ggplot()+
+ geom_linerange(aes(x=sum(!grepl("QC", food$StudyID))-missing_summary$total_missing_interv,
+                    ymin=sum(grepl("Post", food$StudyID))-missing_summary$missing_Post,
+                    ymax=sum(grepl("Pre", food$StudyID))-missing_summary$missing_Pre),
+                colour=ifelse(sum(grepl("Post", food$StudyID))-missing_summary$missing_Post >
+                                sum(grepl("Pre", food$StudyID))-missing_summary$missing_Pre,"#D55E00", "#000000"))+
+  geom_point(aes(x=sum(!grepl("QC", food$StudyID))-missing_summary$total_missing_interv,
+                 y=sum(grepl("Post", food$StudyID))-missing_summary$missing_Post, colour="#D55E00"))+
+  geom_point(aes(x=sum(!grepl("QC", food$StudyID))-missing_summary$total_missing_interv,
+                 y=sum(grepl("Pre", food$StudyID))-missing_summary$missing_Pre, colour="#000000"))+
+  scale_color_manual("Intervention Differences",labels = c("Pre","Post"),values = c("#000000", "#D55E00"))+
+  labs(title="Comparing Detection Based on Intervention", y= "# of Post and Pre Detected", x = "# of Total Detected")+
+  theme_bw()+
+  theme(
+    legend.position="bottom",
+    legend.title = element_text(color = "black", size = 10),
+    legend.text = element_text(color = "black", size = 10))
+```
+
+# Implementing log2 on "food"
+```{r}
+## Implementing log2 and rounding to 4 significant figures
+log2_food <- cbind(food[,1:9],round(log2(food[,Metabolite]),4))
+
+## Adding a New Column to Identify QC Values from Human
+log2_food$Type <- ifelse(str_detect(log2_food$StudyID, "QC"), "QC", "Human")
+```
+
+## Outliers and Normalization
+Identifying outlier points and then normalize our values
+```{r}
+## Identifying and Removing Outliers
+## replacing all 0 values in Metabolite with NAs 
+log2_food[,Metabolite][log2_food[,Metabolite]==0] <- NA
+
+## Identifying outliers
+met_outlier <- as.data.frame(matrix(nrow = nrow(log2_food), ncol = ncol(log2_food[,Metabolite])))
+for(i in 1:length(Metabolite)){
+  met_loop <- log2_food[,c(Metabolite[i], "order","batch")]
+  names(met_loop) <- c("Metabolite", "order", "batch")
+  linear_reg <- lm(Metabolite~order*batch, data=met_loop) 
+  met_residuals <- as.vector(linear_reg$residuals)
+  met_q3 <- quantile(met_residuals, 0.75)
+  met_q1 <- quantile(met_residuals, 0.25)
+  iqr <- met_q3 - met_q1
+  met_outlier[names(residuals(linear_reg)),i] <- met_residuals 
+  met_outlier[,i] <- ifelse(met_outlier[,i] > (met_q3 + constant_IQR*iqr) | met_outlier[,i] < (met_q1 - constant_IQR*iqr),F,T)
+}
+
+## Replacing T and F with 0 and 1, and Removing Empty Rows
+met_outlier <- as.data.frame(sapply(met_outlier, as.numeric))
+met_outlier <- met_outlier[rowSums(is.na(met_outlier))!=ncol(met_outlier),]
+      
+## Removing Outliers 
+updated_met <- log2_food
+updated_met[,Metabolite] <- mapply('*', updated_met[,Metabolite], met_outlier)
+updated_met[,Metabolite][updated_met[,Metabolite] == 0] <- NA #setting outliers to NA
+```
+
+### Normalization
+Normalizing the Dataset After Removing Outliers
+```{r}
+## Calculating the normalized values
+met_normalized <- as.data.frame(matrix(nrow = nrow(updated_met), ncol = ncol(updated_met[,Metabolite])))
+for(i in 1:length(Metabolite)){
+  linear_reg_normalized <- lm(updated_met[,Metabolite[i]]~order*batch, data=updated_met)
+  predicted_reg <- predict.lm(linear_reg_normalized, newdata = log2_food)
+  met_normalized[,i] <- as.data.frame(log2_food[,Metabolite[i]]-predicted_reg)
+}
+
+colnames(met_normalized) <- Metabolite
+met_normalized <- cbind(select(updated_met,-all_of(Metabolite)),met_normalized)
+met_normalized[,Metabolite] <- round(met_normalized[,Metabolite],4)
+```
+
+shifting
+```{r}
+min_shift <- apply(log2_food[Metabolite],2,min,na.rm=T)
+met_normalized_shift <- met_normalized
+for(i in 1:length(Metabolite)){
+  met_normalized_shift[Metabolite[i]] <- met_normalized_shift[Metabolite[i]]+min_shift[i]
+}
+```
+ 
+CV filter: Calculate SD and Mean of QC values and then do SD/Mean
+```{r}
+QC_val <- met_normalized_shift[met_normalized_shift$Type=="QC",]
+QC_val <- QC_val[!is.na(QC_val$Type),]
+#QC_val <- QC_val[,colSums(is.na(QC_val))<nrow(QC_val)]
+QC_Metabolite <- colnames(QC_val[,11:ncol(QC_val)])
+
+QC_mean <- sapply(QC_val[QC_Metabolite],mean,na.rm=T)
+QC_SD <- sapply(QC_val[QC_Metabolite],sd,na.rm=T)
+QC_CV <- QC_SD/QC_mean
+
+CV_summary <- as.data.frame(cbind(QC_CV,QC_mean,QC_SD))
+
+#Since all metabolite have QC value below 0.3 except for M.27 whose QC is NA, keep all metabolite
+#Metabolite <- rownames(CV_summary[CV_summary$QC_CV < 0.3,])
+Metabolite<-rownames(CV_summary)
+met_normalized <- cbind(met_normalized[,1:10],met_normalized_shift[,Metabolite])
+```
+      
+## GGPLOTs of Log2(Raw) Values and Normalized Values vs Order 
+### Log2(Raw) vs Order
+```{r}
+for(i in 1:length(Metabolite)){
+  raw_plot <- ggplot(log2_food, aes(x = order, y =log2_food[,Metabolite[i]], color= Type)) + geom_point() + theme_bw() +
+    labs(x = "Order", y = "Log2 Values",
+         title = paste0(Metabolite[i],":",metabolite_info$Compound[which(metabolite_info$Metabolite==Metabolite[i])]," Log2 Raw Values",
+                        sep=""))+
+    scale_color_manual(breaks = c("QC", "Human"), values=c("red", "black"))+
+    geom_vline(xintercept = 45.5, lty = 2) + geom_vline(xintercept = 112.5, lty = 2)
+  print(raw_plot)
+}
+```
+      
+### Normalized vs Order
+```{r}
+for(i in 1:length(Metabolite)){
+  normalized_plot <- ggplot(met_normalized, aes(x = order, y =met_normalized[,Metabolite[i]], color=Type)) + geom_point()+
+    theme_bw() +
+    labs(x = "Order", y = "Normalized Values",
+         title =  paste0(Metabolite[i],":",metabolite_info$Compound[which(metabolite_info$Metabolite==Metabolite[i])]," Log2 Normalized Values",
+                        sep=""))+
+    scale_color_manual(breaks = c("QC", "Human"), values=c("red", "black"))+
+    geom_vline(xintercept = 45.5, lty = 2) + geom_vline(xintercept = 112.5, lty = 2)
+  print(normalized_plot)
+}
+```
+      
+## Spaghetti Plot of Metabolites and Period 
+These Plots Show the Normalized Values for For Each Individual Throughout All Periods. In Which Most Metabolites Show an Increase in Their Normalized Values When Changing From "Pre" to "Post", and Also a Decrease From First Trial to Second Trial("Post" to "Pre") Which is the Time Frame that They are Not Consuming Salmon. 
+```{r message=FALSE}
+normalized_spaghetti <- met_normalized[!(met_normalized$Type=="QC"),]
+normalized_spaghetti$StudyID <- gsub(" .*","",normalized_spaghetti$StudyID)
+
+for(i in 1:length(Metabolite)){
+  raw_plot <- ggplot(log2_food, aes(x = order, y =log2_food[,Metabolite[i]], color= Type)) + geom_point() + theme_bw() +
+    labs(x = "Order", y = "Log2 Values",
+         title = paste0(Metabolite[i],":",metabolite_info$Compound[which(metabolite_info$Metabolite==Metabolite[i])],
+                        " Log2 Raw Values",sep=""))+
+    scale_color_manual(breaks = c("QC", "Human"), values=c("red", "black"))+
+    geom_vline(xintercept = 45.5, lty = 2) + geom_vline(xintercept = 112.5, lty = 2)
+    normalized_plot <- ggplot(met_normalized, aes(x = order, y =met_normalized[,Metabolite[i]], color=Type)) + geom_point()+
+    theme_bw() +
+    labs(x = "Order", y = "Normalized Values",
+         title =  paste0(Metabolite[i],":",metabolite_info$Compound[which(metabolite_info$Metabolite==Metabolite[i])],
+                         " Log2 Normalized Values",
+                        sep=""))+
+    scale_color_manual(breaks = c("QC", "Human"), values=c("red", "black"))+
+    geom_vline(xintercept = 45.5, lty = 2) + geom_vline(xintercept = 112.5, lty = 2)
+  spaghetti <- ggplot(normalized_spaghetti,aes(Period,normalized_spaghetti[,Metabolite[i]],
+                                                         group=StudyID, colour = Diet))+
+    geom_point(color="#56B4E9",size=4) + geom_line(color="#56B4E9")+
+    stat_summary(fun=mean, aes(group=1), geom="line", colour="#000000", size = 1) +
+    stat_summary(fun=mean, aes(group=1), geom="point", colour="#000000", size=3, shape=4)+
+    labs(title=paste0("Spaghetti plot of ",
+                      Metabolite[i],":",metabolite_info$Compound[which(metabolite_info$Metabolite==Metabolite[i])]),
+         y= "Normalized Value")+ theme_bw() +
+    theme(
+      axis.text.x = element_text(size = 10, angle = 45, hjust=1),
+      plot.title = element_text(size=10,hjust = 0.5),
+      plot.subtitle = element_text(hjust = 0.5),
+      legend.position = "none",
+      axis.title.x = element_blank())+
+    scale_x_discrete(limits=c("1" = "Pre Trial 1", "2" = "Post Trial 1","3" = "Pre Trial 2", "4"="Post Trial 2"))
+  print(spaghetti)
+  plot_row<-plot_grid(raw_plot, normalized_plot,spaghetti)
+  p.out<-plot_grid(plot_row, axis="b", label_size=12, vjust=1.5, scale = 0.95)
+  ggsave2(filename=paste0("Metabolite_", Metabolite[i],file.name,".jpeg", sep=""), plot=p.out, device="jpeg",
+          path=paste0("./Normalization_plot"))
+}
+```
+
+# Analysis
+Creating Datasets for Analysis Section. 
+```{r}
+## Removing QC Rows
+cross_section_normalized <- as.data.frame(met_normalized[!(met_normalized$Type=="QC"),])
+
+## Replacing "NA" with -999 for Ranking
+cross_section_normalized[,Metabolite][is.na(cross_section_normalized[,Metabolite])] <- -999
+```
+
+```{r}
+cross_section_ranked <- cross_section_normalized
+cross_section_ranked[,Metabolite] <- as.data.frame(apply(cross_section_ranked[,Metabolite],2,function(x)
+  rank(x,ties.method="average",na.last="keep")))
+
+## Modifying the "StudyID" to Only Include IDs
+cross_section_ranked$StudyID <- gsub(" .*","",cross_section_ranked$StudyID)
+
+## Changing Columns  "StudyID", "Period", "Trial", and "Sex" to Factors and "Age" to Numeric
+cross_section_ranked[,c("StudyID","Period","Trial","Sex")] <-
+  lapply(cross_section_ranked[,c("StudyID","Period","Trial","Sex")],factor)
+cross_section_ranked$Age <- as.numeric(cross_section_ranked$Age)
+```
+
+Ranking Normalized Values for Each Metabolite. There are 162 Data Point Entries, and Ranking was from 1 to 162, in Which The Lowest Normalized Value was Ranked 1, and the Highest Value was Ranked 162. Values That were Missing were Ranked Lowest Average Value
+```{r message=FALSE}
+## Removing "_total" From Column Names in Health Files
+colnames(diff_in_health_outcome) <- gsub("_total","",colnames(diff_in_health_outcome))
+colnames(complete_health_outcome) <- gsub("_total","",colnames(complete_health_outcome))
+
+outcomes <- colnames(complete_health_outcome)[4:length(complete_health_outcome)]
+
+## Merge with Health File
+cross_section_ranked <- merge(cross_section_ranked, complete_health_outcome, by=c("StudyID", "Period", "Trial"))
+      
+## Changing Class of "outcomes" to Numeric
+cross_section_ranked[,outcomes] <- lapply(cross_section_ranked[,outcomes], function(x) {
+  if(is.integer(x)) 
+    as.numeric(x)
+  else x
+  })
+
+datatable(as.data.frame(cross_section_ranked),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50,100)),
+          class="cell-border stripe", caption="Method 1 Ranking")
+
+write.csv(cross_section_ranked, paste("./food_table/Ranking_metabolites_", file.name,".csv",sep = ""), row.names=F)
+
+```
+
+Creating Dataset for Change Analysis by Calculating Difference in Rank
+```{r}
+change_analysis_ranked <- cross_section_ranked
+```
+
+```{r}
+subject_change_analysis <- unique(substr(change_analysis_ranked$StudyID, 1,3)) 
+difference_ranked_change_analysis <- c()
+      
+for(j in subject_change_analysis){
+  tmp.dat_change_analysis <- change_analysis_ranked[str_detect(change_analysis_ranked$StudyID, j),]
+  
+  for(k in 1:2){
+    if(sum(tmp.dat_change_analysis$Trial == k) == 2){
+      tmp.dat.trial_change_analysis <- tmp.dat_change_analysis[tmp.dat_change_analysis$Trial == k,]
+      
+      mets.dif_change_analysis <- as.data.frame(tmp.dat.trial_change_analysis[grepl("post",tmp.dat.trial_change_analysis$Time),
+                                                                Metabolite]-
+                                           tmp.dat.trial_change_analysis[grepl("pre",tmp.dat.trial_change_analysis$Time),
+                                                                  Metabolite])
+      
+      mets.dif_change_analysis <- cbind(StudyID = j, Trial = k, Age = unique(tmp.dat.trial_change_analysis$Age),
+                                 Sex = unique(tmp.dat.trial_change_analysis$Sex), mets.dif_change_analysis)
+      
+      difference_ranked_change_analysis <- rbind(difference_ranked_change_analysis, mets.dif_change_analysis)
+    }
+  }
+}
+
+datatable(as.data.frame(difference_ranked_change_analysis),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colreorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50)),
+          class="cell-border stripe", caption="Change in Ranks For predicted Salmon Metabolites within Each Trial")
+
+
+write.csv(difference_ranked_change_analysis, paste("./food_table/Change_in_Ranks_Metabolites_", file.name,".csv",sep = ""), row.names=F)
+```
+      
+```{r}
+## Merging with the Health Outcome File
+difference_ranked_change_analysis <- merge(difference_ranked_change_analysis, diff_in_health_outcome, by = c("StudyID","Trial"))
+      
+## Changing Class for "StudyID"
+difference_ranked_change_analysis$StudyID <- as.factor(difference_ranked_change_analysis$StudyID)
+
+## Outcomes Class
+difference_ranked_change_analysis[,outcomes] <- lapply(difference_ranked_change_analysis[,outcomes], function(x) {
+  if(is.integer(x))
+    as.numeric(as.character(x))
+  else x
+  })
+```
+
+## Assoication Between the Change in Ranks of Metabolite
+### Primary Analysis Formula: Without any Covariates
+```{r message=FALSE}
+lmod1_ranked_2_change <- vector(mode = "list", length = 2)
+change_analysis_change_no_cov <- c()
+      
+for(i in 1:length(Metabolite)){
+  tryCatch({
+    lmod1_ranked_2_change[[i]] <- lmer(as.formula(paste(Metabolite[i],"~ 1 + (1|StudyID)",
+                                                        sep = "")),data = difference_ranked_change_analysis)
+    
+    change_no_cov <- cbind(data.frame(summary(lmod1_ranked_2_change[[i]])$coefficients),
+                                    Singular_Fit = isSingular(lmod1_ranked_2_change[[i]]),
+                                    Metabolite=paste0(Metabolite[i]))
+    
+    change_analysis_change_no_cov <- rbind(change_analysis_change_no_cov,change_no_cov)
+    },
+    error=function(e){
+      })
+}
+
+colnames(change_analysis_change_no_cov) <- 
+  c("Estimate_Intercept","Std_Error_Intercept","df_Intercept","t_value_Intercept","p_value_Intercept",
+    "Singular_fit_Intercept","Metabolite")
+      
+## Calculating FDR and LogP
+change_analysis_change_no_cov$FDR_Intercept <- p.adjust(change_analysis_change_no_cov$p_value, method = "BH")
+
+## Creating "test_type", so Results Can be Divided Into "Intercept","Age","Sex","Trial", and "Metabolite"
+change_analysis_change_no_cov$test_type <- rownames(change_analysis_change_no_cov)
+change_analysis_change_no_cov[grepl("Intercept",change_analysis_change_no_cov$test_type),"test_type"] <- "Intercept"
+rownames(change_analysis_change_no_cov) <- NULL
+change_analysis_change_no_cov <- change_analysis_change_no_cov[,!grepl("t_value",colnames(change_analysis_change_no_cov))]
+
+## Showing 4 Significant Digits
+change_analysis_change_no_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                          "p_value_Intercept","FDR_Intercept")] <-
+  format(change_analysis_change_no_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                                   "p_value_Intercept","FDR_Intercept")],digits=4)
+## Changing Class to Numeric
+change_analysis_change_no_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                          "p_value_Intercept","FDR_Intercept")] <-
+  lapply(change_analysis_change_no_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                                   "p_value_Intercept","FDR_Intercept")],function(x) {as.numeric(x)})
+change_analysis_change_no_cov<-change_analysis_change_no_cov[,c("Metabolite","Estimate_Intercept","p_value_Intercept","FDR_Intercept", "Std_Error_Intercept")]
+change_analysis_change_no_cov <- merge(change_analysis_change_no_cov,metabolite_info,by="Metabolite")
+      
+datatable(as.data.frame(change_analysis_change_no_cov),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50)),
+          class="cell-border stripe", caption="LMM for Change in Ranks of predicted Salmmon Metabolites Without Covariates")
+
+write.csv(change_analysis_change_no_cov,
+          paste("./food_table/Change_in_Ranks_Primary_Analysis_",file.name,".csv", sep = ""), row.names=F)
+
+```
+
+#### Summary Plot of Primary Analysis (Without Covariates)
+```{r message=FALSE}
+change_analysis_no_cov_tile <- change_analysis_change_no_cov
+change_analysis_no_cov_tile$value <- ifelse(change_analysis_no_cov_tile$p_value_Intercept < 0.05 & change_analysis_no_cov_tile$FDR_Intercept < 0.05,"Pass FDR", ifelse(change_analysis_no_cov_tile$p_value_Intercept < 0.05 & change_analysis_no_cov_tile$FDR_Intercept > 0.05,"Pass P-value","Fail P-value"))
+
+hline <- function(y = 0, color = "black") {
+  list(
+    type = "line",
+    x0 = 0,
+    x1 = 1,
+    xref = "paper",
+    y0 = y,
+    y1 = y,
+    line = list(color = color, dash="dot")
+  )
+}
+plot_ly(data = change_analysis_no_cov_tile,x = ~Estimate_Intercept, y = -log2(change_analysis_no_cov_tile$FDR_Intercept), 
+        color = as.character(change_analysis_no_cov_tile$value), type="scatter",mode="markers",
+        hoverinfo = "text", colors = c("grey","red","blue"),
+        text=paste0(change_analysis_no_cov_tile$Metabolite,"</br></br>",
+                    paste0("Estimate_Intercept: ",change_analysis_no_cov_tile$Estimate_Intercept),"</br>",
+                    paste0("-log2_FDR: ",-log2(change_analysis_no_cov_tile$FDR_Intercept)))) %>% 
+  layout(shapes=list(hline(-log2(0.05))), title="Volcano Plots for Change in Metabolites After MED Diet",
+         yaxis=list(title="-log2 of FDR"))
+```
+
+
+### Secondary Analysis: With Covariates (Scaling "Age", and "Sex")
+```{r message=FALSE}
+difference_change_analysis_scale <- difference_ranked_change_analysis
+difference_change_analysis_scale$Sex <- ifelse(difference_change_analysis_scale$Sex=="F",1,0)
+
+lmod1_ranked_2_change_cov <- vector(mode = "list", length = 2)
+change_analysis_change_cov <- c()
+      
+for(i in 1:length(Metabolite)){
+  tryCatch({
+    lmod1_ranked_2_change_cov[[i]] <- lmer(as.formula(paste(Metabolite[i],"~ scale(Age) + scale(Sex) + (1|StudyID)",
+                                                        sep = "")),data = difference_change_analysis_scale)
+    
+    change_cov <- cbind(data.frame(summary(lmod1_ranked_2_change_cov[[i]])$coefficients),
+                                    Singular_Fit = isSingular(lmod1_ranked_2_change_cov[[i]]),
+                                    Metabolite=paste0(Metabolite[i]))
+    
+    change_analysis_change_cov <- rbind(change_analysis_change_cov,change_cov)
+    },
+    error=function(e){
+      })
+}
+
+colnames(change_analysis_change_cov) <- c("Estimate","Std_Error","df","t_value","p_value","Singular_fit","Metabolite")
+
+## Calculating FDR and LogP
+change_analysis_change_cov$FDR <- p.adjust(change_analysis_change_cov$p_value, method = "BH")
+
+## Creating "test_type", so Results Can be Divided Into "Intercept","Age","Sex","Trial", and "Metabolite"
+change_analysis_change_cov$test_type <- rownames(change_analysis_change_cov)
+change_analysis_change_cov[grepl("Intercept",change_analysis_change_cov$test_type),"test_type"] <- "Intercept"
+change_analysis_change_cov[grepl("Age",change_analysis_change_cov$test_type),"test_type"] <- "Age"
+change_analysis_change_cov[grepl("Sex",change_analysis_change_cov$test_type),"test_type"] <- "Sex"
+rownames(change_analysis_change_cov) <- NULL
+change_analysis_change_cov <- change_analysis_change_cov[,!grepl("t_value",colnames(change_analysis_change_cov))]
+
+## Showing 4 Significant Digits
+change_analysis_change_cov[,c("Estimate","Std_Error","df","p_value","FDR")] <-
+  format(change_analysis_change_cov[,c("Estimate","Std_Error","df","p_value","FDR")],digits=4)
+
+## Reshaping From Long to Wide
+change_analysis_change_cov <- reshape(change_analysis_change_cov,timevar="test_type",idvar="Metabolite",direction="wide")
+colnames(change_analysis_change_cov) <- gsub("\\.","_",colnames(change_analysis_change_cov))
+
+## Removing Unwanted Columns
+change_analysis_change_cov <- change_analysis_change_cov[,grepl("Estimate|p_value|Intercept|Metabolite",colnames(change_analysis_change_cov))]
+
+## Changing Class to Numeric
+change_analysis_change_cov[,2:ncol(change_analysis_change_cov)] <- 
+  lapply(change_analysis_change_cov[,2:ncol(change_analysis_change_cov)], function(x) {as.numeric(x)})
+
+## Changing to "Singular_fit" to TRUE and FALSE
+singular_col_change_cov <- grep("Singular",colnames(change_analysis_change_cov))
+for(i in singular_col_change_cov){
+  change_analysis_change_cov[,i] <- ifelse(change_analysis_change_cov[,i]==0,"FALSE","TRUE")
+}
+
+change_analysis_change_cov <- change_analysis_change_cov[,c("Metabolite","Estimate_Intercept","p_value_Intercept","FDR_Intercept")]
+change_analysis_change_cov <- merge(change_analysis_change_cov,metabolite_info,by="Metabolite")
+      
+datatable(as.data.frame(change_analysis_change_cov),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50)),
+          class="cell-border stripe", caption="LMM for Change in Ranks of predicted Salmon Metabolites with Covariates")
+write.csv(change_analysis_change_cov,
+          paste("./food_table/Change_in_Ranks_Secondary_Analysis_",file.name,".csv",sep=""), row.names=F)
+```
+
+#### Summary Plot of Secondary Analysis (With Covariates)
+```{r message=FALSE}
+change_analysis_change_cov_tile <- change_analysis_change_cov
+change_analysis_change_cov_tile$value <- ifelse(change_analysis_change_cov_tile$p_value_Intercept < 0.05 & change_analysis_change_cov_tile$FDR_Intercept < 0.05,"Pass FDR", ifelse(change_analysis_change_cov_tile$p_value_Intercept < 0.05 & change_analysis_change_no_cov$FDR_Intercept > 0.05,"Pass P-value","Fail P-value"))
+
+plot_ly(data = change_analysis_change_cov_tile,x = ~Estimate_Intercept, y = -log2(change_analysis_change_cov_tile$FDR_Intercept), 
+        color = as.character(change_analysis_change_cov_tile$value), type="scatter",mode="markers",
+        hoverinfo = "text",colors = c("grey","red","blue"),
+        text=paste0(change_analysis_change_cov_tile$Metabolite,"</br></br>",
+                    paste0("Estimate_Intercept: ",change_analysis_change_cov_tile$Estimate_Intercept),"</br>",
+                    paste0("-log2_FDR: ",-log2(change_analysis_change_cov_tile$FDR_Intercept)))) %>% 
+  layout(shapes=list(hline(-log2(0.05))), title="Volcano Plots for Change in Metabolites After MED Diet with Covariates",
+         yaxis=list(title="-log2 of FDR"))
+```
+
+## Stratified Analysis of "Sex"
+### Male
+#### Primary Analysis for Association Between Change in Metabolite Rankings
+```{r message=FALSE}
+Strat_M <- difference_ranked_change_analysis[grepl("M", difference_ranked_change_analysis$Sex),]
+Strat_F <- difference_ranked_change_analysis[grepl("F", difference_ranked_change_analysis$Sex),]
+
+## no cov on M
+lmod1_strat_M_no <- vector(mode = "list", length = 2)
+method_M_no_cov <- c()
+
+for(i in 1:length(Metabolite)){
+  tryCatch({
+    lmod1_strat_M_no[[i]] <- lmer(as.formula(paste(Metabolite[i],"~ 1 + (1|StudyID)",sep = "")),data = Strat_M)
+
+    M_no_cov <- cbind(data.frame(summary(lmod1_strat_M_no[[i]])$coefficients),
+                                    Singular_Fit = isSingular(lmod1_strat_M_no[[i]]),
+                                    Metabolite=paste0(Metabolite[i]))
+
+    method_M_no_cov <- rbind(method_M_no_cov,M_no_cov)
+    },
+    error=function(e){
+      })
+}
+
+colnames(method_M_no_cov) <-
+  c("Estimate_Intercept","Std_Error_Intercept","df_Intercept","t_value_Intercept","p_value_Intercept",
+    "Singular_fit_Intercept","Metabolite")
+
+## Calculating FDR and LogP
+method_M_no_cov$FDR_Intercept <- p.adjust(method_M_no_cov$p_value, method = "BH")
+
+## Creating "test_type", so Results Can be Divided Into "Intercept","Age","Sex","Trial", and "Metabolite"
+method_M_no_cov$test_type <- rownames(method_M_no_cov)
+method_M_no_cov[grepl("Intercept",method_M_no_cov$test_type),"test_type"] <- "Intercept"
+rownames(method_M_no_cov) <- NULL
+method_M_no_cov <- method_M_no_cov[,!grepl("t_value",colnames(method_M_no_cov))]
+
+## Showing 4 Significant Digits
+method_M_no_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                          "p_value_Intercept","FDR_Intercept")] <-
+  format(method_M_no_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                                   "p_value_Intercept","FDR_Intercept")],digits=4)
+## Changing Class to Numeric
+method_M_no_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                          "p_value_Intercept","FDR_Intercept")] <-
+  lapply(method_M_no_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                                   "p_value_Intercept","FDR_Intercept")],function(x) {as.numeric(x)})
+
+method_M_no_cov <- method_M_no_cov[,c("Metabolite", "Estimate_Intercept","p_value_Intercept","FDR_Intercept")]
+method_M_no_cov <- merge(method_M_no_cov,metabolite_info,by="Metabolite")
+
+datatable(as.data.frame(method_M_no_cov),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50,100)),
+          class="cell-border stripe", caption="Stratified LMM for Change in Ranks of predicted Salmon Metabolites w/o Covariates for Males")
+write.csv(method_M_no_cov, paste("./food_table/Stratified_Change_in_Ranks_Primary_Males_",file.name,".csv",sep=""), row.names=F)
+```
+
+##### Summary Plot of Stratified Analysis for Males (Without Covariates)
+```{r message=FALSE}
+method_M_no_cov_tile <- method_M_no_cov
+method_M_no_cov_tile$value <- ifelse(method_M_no_cov_tile$p_value_Intercept < 0.05 & method_M_no_cov_tile$FDR_Intercept < 0.05,"Pass FDR", ifelse(method_M_no_cov_tile$p_value_Intercept < 0.05 & method_M_no_cov_tile$FDR_Intercept > 0.05,"Pass P-value","Fail P-value"))
+
+plot_ly(data = method_M_no_cov_tile,x = ~Estimate_Intercept, y = -log2(method_M_no_cov_tile$FDR_Intercept), 
+        color = as.character(method_M_no_cov_tile$value), type="scatter",mode="markers",
+        hoverinfo = "text",colors = c("grey","red","blue"),
+        text=paste0(method_M_no_cov_tile$Metabolite,"</br></br>",
+                    paste0("Estimate_Intercept: ",method_M_no_cov_tile$Estimate_Intercept),"</br>",
+                    paste0("-log2_FDR: ",-log2(method_M_no_cov_tile$FDR_Intercept)))) %>% 
+  layout(shapes=list(hline(-log2(0.05))), 
+         title="Volcano Plots for Stratified Analysis Based on Sex(Males) without Covariates",yaxis=list(title="-log2 of FDR"))
+```
+
+#### Secondary Analysis for Association Between Change in Metabolite Rankings
+```{r message=FALSE}
+## cov on M
+lmod1_strat_M <- vector(mode = "list", length = 2)
+method_M_cov <- c()
+
+for(i in 1:length(Metabolite)){
+  tryCatch({
+    lmod1_strat_M[[i]] <- lmer(as.formula(paste(Metabolite[i],"~ scale(Age) + (1|StudyID)",sep = "")),data = Strat_M)
+
+    M_cov <- cbind(data.frame(summary(lmod1_strat_M[[i]])$coefficients),
+                                    Singular_Fit = isSingular(lmod1_strat_M[[i]]),
+                                    Metabolite=paste0(Metabolite[i]))
+
+    method_M_cov <- rbind(method_M_cov,M_cov)
+    },
+    error=function(e){
+      })
+}
+
+colnames(method_M_cov) <-
+  c("Estimate_Intercept","Std_Error_Intercept","df_Intercept","t_value_Intercept","p_value_Intercept",
+    "Singular_fit_Intercept","Metabolite")
+
+## Calculating FDR and LogP
+method_M_cov$FDR_Intercept <- p.adjust(method_M_cov$p_value, method = "BH")
+
+## Creating "test_type", so Results Can be Divided Into "Intercept","Age","Sex","Trial", and "Metabolite"
+method_M_cov$test_type <- rownames(method_M_cov)
+method_M_cov[grepl("Intercept",method_M_cov$test_type),"test_type"] <- "Intercept"
+rownames(method_M_cov) <- NULL
+method_M_cov <- method_M_cov[,!grepl("t_value",colnames(method_M_cov))]
+method_M_cov <- method_M_cov[grepl("Intercept",method_M_cov$test_type),]
+
+## Showing 4 Significant Digits
+method_M_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                          "p_value_Intercept","FDR_Intercept")] <-
+  format(method_M_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                                   "p_value_Intercept","FDR_Intercept")],digits=4)
+## Changing Class to Numeric
+method_M_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                          "p_value_Intercept","FDR_Intercept")] <-
+  lapply(method_M_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                                   "p_value_Intercept","FDR_Intercept")],function(x) {as.numeric(x)})
+
+method_M_cov <- method_M_cov[,c("Metabolite", "Estimate_Intercept","p_value_Intercept","FDR_Intercept")]
+method_M_cov <- merge(method_M_cov,metabolite_info,by="Metabolite")
+
+datatable(as.data.frame(method_M_cov),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50,100)),
+          class="cell-border stripe", caption="Stratified LMM for Change in Ranks of predicted Salmon Metabolites with Covariates for Males")
+write.csv(method_M_cov, paste("./food_table/Stratified_Change_in_Ranks_Secondary_Males_",file.name,".csv",sep = ""), row.names=F)
+```
+
+##### Summary Plot of Stratified Analysis for Males (With Covariates)
+```{r message=FALSE}
+method_M_cov_tile <- method_M_cov
+method_M_cov_tile$value <- ifelse(method_M_cov_tile$p_value_Intercept < 0.05 & method_M_cov_tile$FDR_Intercept < 0.05,"Pass FDR", ifelse(method_M_cov_tile$p_value_Intercept < 0.05 & method_M_cov_tile$FDR_Intercept > 0.05,"Pass P-value","Fail P-value"))
+
+plot_ly(data = method_M_cov_tile,x = ~Estimate_Intercept, y = -log2(method_M_cov_tile$FDR_Intercept), 
+        color = as.character(method_M_cov_tile$value), type="scatter",mode="markers",
+        hoverinfo = "text",colors = c("grey","red","blue"),
+        text=paste0(method_M_cov_tile$Metabolite,"</br></br>",
+                    paste0("Estimate_Intercept: ",method_M_cov_tile$Estimate_Intercept),"</br>",
+                    paste0("-log2_FDR: ",-log2(method_M_cov_tile$FDR_Intercept)))) %>% 
+  layout(shapes=list(hline(-log2(0.05))), title="Volcano Plots for Stratified Analysis Based on Sex(Males) with Covariates",yaxis=list(title="-log2 of FDR"))
+```
+
+### Female
+#### Primary Analysis for Association Between Change in Metabolite Rankings
+```{r message=FALSE}
+## no cov on F
+lmod1_strat_F_no <- vector(mode = "list", length = 2)
+method_F_no_cov <- c()
+
+for(i in 1:length(Metabolite)){
+  tryCatch({
+    lmod1_strat_F_no[[i]] <- lmer(as.formula(paste(Metabolite[i],"~ 1 + (1|StudyID)",sep = "")),data = Strat_F)
+
+    F_no_cov <- cbind(data.frame(summary(lmod1_strat_F_no[[i]])$coefficients),
+                                    Singular_Fit = isSingular(lmod1_strat_F_no[[i]]),
+                                    Metabolite=paste0(Metabolite[i]))
+
+    method_F_no_cov <- rbind(method_F_no_cov,F_no_cov)
+    },
+    error=function(e){
+      })
+}
+
+colnames(method_F_no_cov) <-
+  c("Estimate_Intercept","Std_Error_Intercept","df_Intercept","t_value_Intercept","p_value_Intercept",
+    "Singular_fit_Intercept","Metabolite")
+
+## Calculating FDR and LogP
+method_F_no_cov$FDR_Intercept <- p.adjust(method_F_no_cov$p_value, method = "BH")
+
+## Creating "test_type", so Results Can be Divided Into "Intercept","Age","Sex","Trial", and "Metabolite"
+method_F_no_cov$test_type <- rownames(method_F_no_cov)
+method_F_no_cov[grepl("Intercept",method_F_no_cov$test_type),"test_type"] <- "Intercept"
+rownames(method_F_no_cov) <- NULL
+method_F_no_cov <- method_F_no_cov[,!grepl("t_value",colnames(method_F_no_cov))]
+
+## Showing 4 Significant Digits
+method_F_no_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                          "p_value_Intercept","FDR_Intercept")] <-
+  format(method_F_no_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                                   "p_value_Intercept","FDR_Intercept")],digits=4)
+## Changing Class to Numeric
+method_F_no_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                          "p_value_Intercept","FDR_Intercept")] <-
+  lapply(method_F_no_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                                   "p_value_Intercept","FDR_Intercept")],function(x) {as.numeric(x)})
+
+method_F_no_cov <- method_F_no_cov[,c("Metabolite", "Estimate_Intercept","p_value_Intercept","FDR_Intercept")]
+method_F_no_cov <- merge(method_F_no_cov,metabolite_info,by="Metabolite")
+
+datatable(as.data.frame(method_F_no_cov),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50,100)),
+          class="cell-border stripe", caption="Stratified LMM for Change in Ranks of predicted Salmon Metabolites w/o Covariates for Females")
+write.csv(method_F_no_cov, paste("./food_table/Stratified_Change_in_Ranks_Primary_Females_",file.name,".csv",sep = ""), row.names=F)
+```
+
+##### Summary Plot of Stratified Analysis for Females (Without Covariates)
+```{r message=FALSE}
+method_F_no_cov_tile <- method_F_no_cov
+method_F_no_cov_tile$value <- ifelse(method_F_no_cov_tile$p_value_Intercept < 0.05 & method_F_no_cov_tile$FDR_Intercept < 0.05,"Pass FDR", ifelse(method_F_no_cov_tile$p_value_Intercept < 0.05 & method_F_no_cov_tile$FDR_Intercept > 0.05,"Pass P-value","Fail P-value"))
+
+plot_ly(data = method_F_no_cov_tile,x = ~Estimate_Intercept, y = -log2(method_F_no_cov_tile$FDR_Intercept), 
+        color = as.character(method_F_no_cov_tile$value), type="scatter",mode="markers",
+        hoverinfo = "text",colors = c("grey","red","blue"),
+        text=paste0(method_F_no_cov_tile$Metabolite,"</br></br>",
+                    paste0("Estimate_Intercept: ",method_F_no_cov_tile$Estimate_Intercept),"</br>",
+                    paste0("-log2_FDR: ",-log2(method_F_no_cov_tile$FDR_Intercept)))) %>% 
+  layout(shapes=list(hline(-log2(0.05))), title="Volcano Plots for Stratified Analysis Based on Sex(Females) without Covariates",yaxis=list(title="-log2 of FDR"))
+```
+
+#### Secondary Analysis for Association Between Change in Metabolite Rankings
+```{r message=FALSE}
+## cov on F
+lmod1_strat_F <- vector(mode = "list", length = 2)
+method_F_cov <- c()
+
+for(i in 1:length(Metabolite)){
+  tryCatch({
+    lmod1_strat_F[[i]] <- lmer(as.formula(paste(Metabolite[i],"~ scale(Age) + (1|StudyID)",sep = "")),data = Strat_F)
+
+    F_cov <- cbind(data.frame(summary(lmod1_strat_F[[i]])$coefficients),
+                                    Singular_Fit = isSingular(lmod1_strat_F[[i]]),
+                                    Metabolite=paste0(Metabolite[i]))
+
+    method_F_cov <- rbind(method_F_cov,F_cov)
+    },
+    error=function(e){
+      })
+}
+
+colnames(method_F_cov) <-
+  c("Estimate_Intercept","Std_Error_Intercept","df_Intercept","t_value_Intercept","p_value_Intercept",
+    "Singular_fit_Intercept","Metabolite")
+
+## Calculating FDR and LogP
+method_F_cov$FDR_Intercept <- p.adjust(method_F_cov$p_value, method = "BH")
+
+## Creating "test_type", so Results Can be Divided Into "Intercept","Age","Sex","Trial", and "Metabolite"
+method_F_cov$test_type <- rownames(method_F_cov)
+method_F_cov[grepl("Intercept",method_F_cov$test_type),"test_type"] <- "Intercept"
+rownames(method_F_cov) <- NULL
+method_F_cov <- method_F_cov[,!grepl("t_value",colnames(method_F_cov))]
+method_F_cov <- method_F_cov[grepl("Intercept",method_F_cov$test_type),]
+
+## Showing 4 Significant Digits
+method_F_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                          "p_value_Intercept","FDR_Intercept")] <-
+  format(method_F_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                                   "p_value_Intercept","FDR_Intercept")],digits=4)
+## Changing Class to Numeric
+method_F_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                          "p_value_Intercept","FDR_Intercept")] <-
+  lapply(method_F_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                                   "p_value_Intercept","FDR_Intercept")],function(x) {as.numeric(x)})
+
+method_F_cov <- method_F_cov[,c("Metabolite", "Estimate_Intercept","p_value_Intercept","FDR_Intercept")]
+method_F_cov <- merge(method_F_cov,metabolite_info,by="Metabolite")
+
+datatable(as.data.frame(method_F_cov),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50,100)),
+          class="cell-border stripe", caption="Stratified LMM for Change in Ranks of predicted Salmon Metabolites with Covariates for Females")
+write.csv(method_F_cov, paste("./food_table/Stratified_Change_in_Ranks_Secondary_Females_",file.name,".csv",sep = ""), row.names=F)
+```
+
+##### Summary Plot of Stratified Analysis for Females (With Covariates)
+```{r message=FALSE}
+method_F_cov_tile <- method_F_cov
+method_F_cov_tile$value <- ifelse(method_F_cov_tile$p_value_Intercept < 0.05 & method_F_cov_tile$FDR_Intercept < 0.05,"Pass FDR", ifelse(method_F_cov_tile$p_value_Intercept < 0.05 & method_F_cov_tile$FDR_Intercept > 0.05,"Pass P-value","Fail P-value"))
+
+plot_ly(data = method_F_cov_tile,x = ~Estimate_Intercept, y = -log2(method_F_cov_tile$FDR_Intercept), 
+        color = as.character(method_F_cov_tile$value), type="scatter",mode="markers",
+        hoverinfo = "text",colors = c("grey","red","blue"),
+        text=paste0(method_F_cov_tile$Metabolite,"</br></br>",
+                    paste0("Estimate_Intercept: ",method_F_cov_tile$Estimate_Intercept),"</br>",
+                    paste0("-log2_FDR: ",-log2(method_F_cov_tile$FDR_Intercept)))) %>% 
+  layout(shapes=list(hline(-log2(0.05))), title="Volcano Plots for Stratified Analysis Based on Sex(Females) with Covariates",yaxis=list(title="-log2 of FDR"))
+```
+
+## Cross-Sectional Association Between Salmon Metabolites and Health Outcomes
+There are Two Approaches to Assess this Association. First Method is to Rank the Normalized Values within Each Metabolites, and then Apply Linear Mixed Model(LMM) to Assess Association between predicted Salmon Metabolites with Health Outcomes.Second Method is to use the Ranked Metabolites From First Method and then Sum Metabolites Rankings for Each Individual and Specific Period and then Apply LMM to Assess Association between predicted Salmon Metabolites with Health Outcomes. 
+
+### Association between Salmon Metabolites and Health Outcomes
+```{r message=FALSE}
+lmod1_ranked_1_period <- vector(mode = "list")
+cross_section_out_period <- c() 
+
+for(i in 1:length(Metabolite)){
+  for(j in 1:length(outcomes)){
+    tryCatch({
+      lmod1_ranked_1_period[[i]] <- lmer(as.formula(
+        paste(outcomes[j],"~ Age + Sex + Period +",Metabolite[i],"+ (1|StudyID)",sep = "")),data = cross_section_ranked)
+      
+      res1_cross_section_period <- cbind(data.frame(summary(lmod1_ranked_1_period[[i]])$coefficients),
+                                   Singular_Fit = isSingular(lmod1_ranked_1_period[[i]]),
+                                   Out_type=outcomes[j],
+                                   Metabolite=paste0(Metabolite[i]))
+      
+      cross_section_out_period <- rbind(cross_section_out_period,res1_cross_section_period)
+      },
+      error=function(e){
+        })
+  }
+}
+
+colnames(cross_section_out_period) <- c("Estimate","Std_Error","df","t_value","p_value","Singular_fit","Out_type","Metabolite")
+      
+## calculating FDR and LogP
+cross_section_out_period$FDR <- p.adjust(cross_section_out_period$p_value, method = "BH")
+
+## Creating "test_type", so Results Can be Divided Into "Intercept","Age","Sex","Trial", and "Metabolite"
+cross_section_out_period$test_type <- rownames(cross_section_out_period)
+cross_section_out_period <- cross_section_out_period[!grepl("Intercept",cross_section_out_period$test_type),]
+cross_section_out_period[grepl("Age",cross_section_out_period$test_type),"test_type"] <- "Age"
+cross_section_out_period[grepl("Sex",cross_section_out_period$test_type),"test_type"] <- "Sex"
+cross_section_out_period[grepl("M.",cross_section_out_period$test_type),"test_type"] <- "Metabolite"
+cross_section_out_period[grepl("Period2",cross_section_out_period$test_type),"test_type"] <- "period_2"
+cross_section_out_period[grepl("Period3",cross_section_out_period$test_type),"test_type"] <- "period_3"
+cross_section_out_period[grepl("Period4",cross_section_out_period$test_type),"test_type"] <- "period_4"
+rownames(cross_section_out_period) <- NULL
+cross_section_out_period <- cross_section_out_period[,!grepl("t_value",colnames(cross_section_out_period))]
+
+## Changing Class to Numeric
+cross_section_out_period[,c("Estimate","Std_Error","df","p_value","FDR")] <- 
+  lapply(cross_section_out_period[,c("Estimate","Std_Error","df","p_value","FDR")], function(x) {as.numeric(x)})
+
+## Showing 4 Significant Digits
+cross_section_out_period[,c("Estimate","Std_Error")] <- round(cross_section_out_period[,c("Estimate","Std_Error")],digits = 4)
+cross_section_out_period[,c("df","p_value","FDR")] <- format(cross_section_out_period[,c("df","p_value","FDR")],digits = 4)
+
+## "num_outcomes" Assigns Numerical Values to Health Outcomes. Column "out_type" is Numerical Values of Health Outcomes
+num_outcomes <- data.frame("Health_out"=outcomes, "type"=as.numeric(factor(outcomes)))
+cross_section_out_period$type <- cross_section_out_period$Out_type
+cross_section_out_period <- transform(cross_section_out_period,type=as.numeric(factor(type)))
+
+## Reshaping From Long to Wide
+cross_section_out_period <- reshape(cross_section_out_period,timevar="test_type",idvar=c("Metabolite","type"),direction="wide")
+
+## Modifying Column Names and Removing "Out_type" Columns to Replace with "type"      
+colnames(cross_section_out_period) <- gsub("\\.","_",colnames(cross_section_out_period))
+cross_section_out_period <- cross_section_out_period[, -grep("Out_type", colnames(cross_section_out_period))]
+cross_section_out_period$type <- ifelse(cross_section_out_period$type==num_outcomes$type,num_outcomes$Health_out,cross_section_out_period$type)
+
+## Removing Unwanted Columns
+cross_section_out_period <- cross_section_out_period[,grepl("Estimate|p_value|Metabolite|type|FDR_period",colnames(cross_section_out_period))]
+
+## Changing Class to Numeric
+cross_section_out_period[,3:ncol(cross_section_out_period)] <- lapply(cross_section_out_period[,3:ncol(cross_section_out_period)], function(x) {as.numeric(x)})
+
+## Changing to "Singular_fit" to TRUE and FALSE
+singular_col_period <- grep("Singular",colnames(cross_section_out_period))
+for(i in singular_col_period){
+  cross_section_out_period[,i] <- ifelse(cross_section_out_period[,i]==0,"FALSE","TRUE")
+}
+
+cross_section_out_period <- cross_section_out_period[,c("Metabolite","type","Estimate_Metabolite","p_value_Metabolite", "FDR_Metabolite")]
+cross_section_out_period <- merge(cross_section_out_period,metabolite_info,by="Metabolite")
+
+datatable(as.data.frame(cross_section_out_period),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50,100)),
+          class="cell-border stripe", caption="LMM Results of Method 1 with Health Outcomes Cross-Sectionally")
+write.csv(cross_section_out_period,
+          paste("./food_table/Cross_section_analysis_Health_Metabolites_",file.name,".csv",sep = ""), row.names=F)
+```
+
+#### Summary Plot of Association Between Salmon Metabolites and Health Outcomes
+```{r, fig.height=15, fig.width=10, message=FALSE}
+cross_section_out_period_tile <- cross_section_out_period
+cross_section_out_period_tile$value <- ifelse(cross_section_out_period_tile$p_value_Metabolite < 0.05 & cross_section_out_period_tile$FDR_Metabolite < 0.05,"Pass FDR",ifelse(cross_section_out_period_tile$p_value_Metabolite < 0.05 & cross_section_out_period_tile$FDR_Metabolite > 0.05,"Pass P-value","Fail P-value"))
+
+food_health <- ggplot(cross_section_out_period_tile, aes(type, Metabolite, p_value_Metabolite=p_value_Metabolite,
+                                                    FDR_Metabolite=FDR_Metabolite,fill=as.character(value))) +
+  geom_tile() + theme_bw() + scale_fill_manual(name="Outcomes" ,values=c("grey","red","blue")) +
+  labs(title="Summary Plot of Association Between Salmon Metabolites and Health Outcomes")
+ggplotly(food_health,tooltip = c("Metabolite","p_value_Metabolite","FDR_Metabolite"))
+```
+
+#### Significant Metabolites Associated with Health Outcomes   
+There were 69 Possible Associations Between Health Outcomes and Metabolites That had a FDR value Below 0.05. In Which 11 were Related to ApoB, 16 to Chol_T, 2 to Chol_T_HDL, 1 to CRP, 14 to HDL, 3 to HDL_LDL, 13 to LDL, and 9 to TG.  
+```{r}
+sig_1_out_period <- cross_section_out_period[cross_section_out_period$p_value_Metabolite < 0.05,]
+
+sig_1_out_FDR_period <- cross_section_out_period[cross_section_out_period$FDR_Metabolite < 0.05,]
+
+datatable(as.data.frame(sig_1_out_period),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50)),
+          class="cell-border stripe", caption="Significant Metabolites of Method 1 with Health Outcomes Cross-Sectionally")
+```
+      
+#### GGPLOT for Significant Metabolites
+##### Scatter Plot
+```{r message=FALSE}
+if(nrow(sig_1_out_period)>0){
+  for(i in 1:nrow(sig_1_out_period)){
+    cross_section_plot <- ggplot(cross_section_ranked,aes_string(cross_section_ranked[,sig_1_out_period[i,"Metabolite"]],
+                                                       cross_section_ranked[,sig_1_out_period[i,"type"]]))+
+      geom_point()+ theme_bw()+
+      labs(x="Rank", y=paste(sig_1_out_period[i,"type"]),
+           title=paste(sig_1_out_period[i,"type"],"plot of",sig_1_out_period[i,"Metabolite"],":",sig_1_out_period[i,"Compound"]))+
+      theme(plot.title = element_text(size=10,hjust=0.5))
+    print(cross_section_plot)
+  }
+}
+```
+
+##### Boxplot of Metabolites and Sex
+```{r}
+sig_1_out_unique <- unique(sig_1_out_period$Metabolite)
+
+for(i in sig_1_out_unique){
+ cross_section_boxplot <- ggplot(cross_section_ranked,aes(Sex, cross_section_ranked[,i],fill=Sex))+
+   geom_boxplot()+ theme_bw()+
+   labs(x="Sex", y="Ranks",title= paste0(i," : ",metabolite_info[grepl(i,metabolite_info$Metabolite),"Compound"], " vs Sex"))+
+   theme(plot.title = element_text(size=10,hjust=0.5))
+ print(cross_section_boxplot)
+}
+```
+
+#### Stratified Analyses
+##### Stratified based on Time Point (Pre vs Post)
+###### Cross-Sectional Association Between Salmon Metabolites and Health Outcomes in "Pre" Intervention
+```{r}
+cross_section_pre <- cross_section_ranked[grepl("pre", cross_section_ranked$Time),]
+
+lmod1_ranked_1_pre <- vector(mode = "list")
+cross_section_out_pre  <- c()
+
+for(i in 1:length(Metabolite)){
+  for(j in 1:length(outcomes)){
+    tryCatch({
+      lmod1_ranked_1_pre[[i]] <- lmer(as.formula(paste(outcomes[j],"~ Age + Sex +",Metabolite[i],"+ (1|StudyID)",
+                                                       sep = "")),data = cross_section_pre)
+      
+      res1_cross_section_pre <- cbind(data.frame(summary(lmod1_ranked_1_pre[[i]])$coefficients),
+                                 Singular_Fit = isSingular(lmod1_ranked_1_pre[[i]]),
+                                 Out_type=outcomes[j],
+                                 Metabolite=paste0(Metabolite[i]))
+      
+      cross_section_out_pre <- rbind(cross_section_out_pre,res1_cross_section_pre)
+      },
+      error=function(e){
+        })
+  }
+}
+
+colnames(cross_section_out_pre) <- c("Estimate","Std_Error","df","t_value","p_value","Singular_fit","Out_type","Metabolite")
+
+## calculating FDR and LogP
+cross_section_out_pre$FDR <- p.adjust(cross_section_out_pre$p_value, method = "BH")
+
+## Creating "test_type", so Results Can be Divided Into "Intercept","Age","Sex","Trial", and "Metabolite"
+cross_section_out_pre$test_type <- rownames(cross_section_out_pre)
+cross_section_out_pre <- cross_section_out_pre[!grepl("Intercept",cross_section_out_pre$test_type),]
+cross_section_out_pre[grepl("Age",cross_section_out_pre$test_type),"test_type"] <- "Age"
+cross_section_out_pre[grepl("Sex",cross_section_out_pre$test_type),"test_type"] <- "Sex"
+cross_section_out_pre[grepl("M.",cross_section_out_pre$test_type),"test_type"] <- "Metabolite"
+rownames(cross_section_out_pre) <- NULL
+cross_section_out_pre <- cross_section_out_pre[,!grepl("t_value",colnames(cross_section_out_pre))]
+
+## Changing Class to Numeric
+cross_section_out_pre[,c("Estimate","Std_Error","df","p_value","FDR")] <- 
+  lapply(cross_section_out_pre[,c("Estimate","Std_Error","df","p_value","FDR")], function(x) {as.numeric(x)})
+
+## Showing 4 Significant Digits
+cross_section_out_pre[,c("Estimate","Std_Error")] <- round(cross_section_out_pre[,c("Estimate","Std_Error")],digits = 4)
+cross_section_out_pre[,c("df","p_value","FDR")] <- format(cross_section_out_pre[,c("df","p_value","FDR")],digits = 4)
+
+## "num_outcomes" Assigns Numerical Values to Health Outcomes. Column "out_type" is Numerical Values of Health Outcomes
+num_outcomes <- data.frame("Health_out"=outcomes, "type"=as.numeric(factor(outcomes)))
+cross_section_out_pre$type <- cross_section_out_pre$Out_type
+cross_section_out_pre <- transform(cross_section_out_pre,type=as.numeric(factor(type)))
+
+## Reshaping From Long to Wide
+cross_section_out_pre <- reshape(cross_section_out_pre,timevar="test_type",idvar=c("Metabolite","type"),direction="wide")
+
+## Modifying Column Names and Removing "Out_type" Columns to Replace with "type"      
+colnames(cross_section_out_pre) <- gsub("\\.","_",colnames(cross_section_out_pre))
+cross_section_out_pre <- cross_section_out_pre[,-2]  
+names(cross_section_out_pre)[names(cross_section_out_pre) == 'Out_type_Age'] <- "type"
+cross_section_out_pre <- cross_section_out_pre[, -grep("Out_type", colnames(cross_section_out_pre))]
+#cross_section_out_pre$type <- ifelse(cross_section_out_pre$type==num_outcomes$type,num_outcomes$Health_out,cross_section_out_pre$type)
+
+
+## Removing Unwanted Columns      
+cross_section_out_pre <- cross_section_out_pre[,grepl("Estimate|p_value|Metabolite|type",colnames(cross_section_out_pre))]
+
+## Changing Class to Numeric
+cross_section_out_pre[,5:ncol(cross_section_out_pre)] <- lapply(cross_section_out_pre[,5:ncol(cross_section_out_pre)], function(x) {as.numeric(x)})
+
+cross_section_out_pre<- cross_section_out_pre[,c("Metabolite","type","Estimate_Metabolite","p_value_Metabolite","FDR_Metabolite")]
+
+cross_section_out_pre <- merge(cross_section_out_pre,metabolite_info,by="Metabolite")
+
+datatable(as.data.frame(cross_section_out_pre),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50,100)),
+          class="cell-border stripe", caption="LMM Results of Stratified Analysis for Pre Intervention with Health Outcomes Cross-Sectionally")
+write.csv(cross_section_out_pre,
+          paste("./food_table/Stratified_Cross_section_health_Metabolites_Pre_int_",file.name,".csv",sep=""), row.names=F)
+```
+
+###### Summary Plot of Association Between Salmon Metabolites and Health Outcomes in Pre Intervention
+```{r, fig.height=15, fig.width=10, message=FALSE}
+cross_section_out_pre_tile <- cross_section_out_pre
+cross_section_out_pre_tile$value <- ifelse(cross_section_out_pre_tile$p_value_Metabolite < 0.05 & cross_section_out_pre_tile$FDR_Metabolite < 0.05,"Pass FDR",ifelse(cross_section_out_pre_tile$p_value_Metabolite < 0.05 & cross_section_out_pre_tile$FDR_Metabolite > 0.05,"Pass P-value","Fail P-value"))
+
+food_health_pre <- ggplot(cross_section_out_pre_tile, aes(type, Metabolite, p_value_Metabolite=p_value_Metabolite,
+                                                 FDR_Metabolite=FDR_Metabolite,fill=as.character(value))) +
+  geom_tile() + theme_bw() + scale_fill_manual(name="Outcomes" ,values=c("grey","red","blue")) +
+  labs(title="Summary Plot of Association Salmon Metabolites and Health Outcomes in Pre Intervention")
+ggplotly(food_health_pre,tooltip = c("Metabolite","p_value_Metabolite","FDR_Metabolite"))
+```
+
+###### Cross-Sectional Association Between Salmon Metabolites and Health Outcomes in "Post" Intervention
+```{r}
+cross_section_post <- cross_section_ranked[grepl("post", cross_section_ranked$Time),]
+
+lmod1_ranked_1_post <- vector(mode = "list")
+cross_section_out_post <- c()
+
+for(i in 1:length(Metabolite)){
+  for(j in 1:length(outcomes)){
+    tryCatch({
+      lmod1_ranked_1_post[[i]] <- lmer(as.formula(paste(outcomes[j],"~ Age + Sex +",Metabolite[i],"+ (1|StudyID)",
+                                                       sep = "")),data = cross_section_post)
+      
+      res1_cross_section_post <- cbind(data.frame(summary(lmod1_ranked_1_post[[i]])$coefficients),
+                                 Singular_Fit = isSingular(lmod1_ranked_1_post[[i]]),
+                                 Out_type=outcomes[j],
+                                 Metabolite=paste0(Metabolite[i]))
+      
+      cross_section_out_post <- rbind(cross_section_out_post,res1_cross_section_post)
+      },
+      error=function(e){
+        })
+  }
+}
+
+colnames(cross_section_out_post) <- c("Estimate","Std_Error","df","t_value","p_value","Singular_fit","Out_type","Metabolite")
+
+## calculating FDR and LogP
+cross_section_out_post$FDR <- p.adjust(cross_section_out_post$p_value, method = "BH")
+
+## Creating "test_type", so Results Can be Divided Into "Intercept","Age","Sex","Trial", and "Metabolite"
+cross_section_out_post$test_type <- rownames(cross_section_out_post)
+cross_section_out_post <- cross_section_out_post[!grepl("Intercept",cross_section_out_post$test_type),]
+cross_section_out_post[grepl("Age",cross_section_out_post$test_type),"test_type"] <- "Age"
+cross_section_out_post[grepl("Sex",cross_section_out_post$test_type),"test_type"] <- "Sex"
+cross_section_out_post[grepl("M.",cross_section_out_post$test_type),"test_type"] <- "Metabolite"
+rownames(cross_section_out_post) <- NULL
+cross_section_out_post <- cross_section_out_post[,!grepl("t_value",colnames(cross_section_out_post))]
+
+## Changing Class to Numeric
+cross_section_out_post[,c("Estimate","Std_Error","df","p_value","FDR")] <- 
+  lapply(cross_section_out_post[,c("Estimate","Std_Error","df","p_value","FDR")], function(x) {as.numeric(x)})
+
+## Showing 4 Significant Digits
+cross_section_out_post[,c("Estimate","Std_Error")] <- round(cross_section_out_post[,c("Estimate","Std_Error")],digits = 4)
+cross_section_out_post[,c("df","p_value","FDR")] <- format(cross_section_out_post[,c("df","p_value","FDR")],digits = 4)
+
+## "num_outcomes" Assigns Numerical Values to Health Outcomes. Column "out_type" is Numerical Values of Health Outcomes
+num_outcomes <- data.frame("Health_out"=outcomes, "type"=as.numeric(factor(outcomes)))
+cross_section_out_post$type <- cross_section_out_post$Out_type
+cross_section_out_post <- transform(cross_section_out_post,type=as.numeric(factor(type)))
+
+## Reshaping From Long to Wide
+cross_section_out_post <- reshape(cross_section_out_post,timevar="test_type",idvar=c("Metabolite","type"),direction="wide")
+
+## Modifying Column Names and Removing "Out_type" Columns to Replace with "type"      
+colnames(cross_section_out_post) <- gsub("\\.","_",colnames(cross_section_out_post))
+cross_section_out_post <- cross_section_out_post[,-2]  
+names(cross_section_out_post)[names(cross_section_out_post) == 'Out_type_Age'] <- "type"
+cross_section_out_post <- cross_section_out_post[, -grep("Out_type", colnames(cross_section_out_post))]
+#cross_section_out_post$type <- ifelse(cross_section_out_post$type==num_outcomes$type,num_outcomes$Health_out,cross_section_out_post$type)
+
+## Removing Unwanted Columns      
+cross_section_out_post <- cross_section_out_post[,grepl("Estimate|p_value|Metabolite|type",colnames(cross_section_out_post))]
+
+## Changing Class to Numeric
+cross_section_out_post[,5:ncol(cross_section_out_post)] <- lapply(cross_section_out_post[,5:ncol(cross_section_out_post)], function(x) {as.numeric(x)})
+cross_section_out_post <- cross_section_out_post[,c("Metabolite","type","Estimate_Metabolite","p_value_Metabolite","FDR_Metabolite")]
+cross_section_out_post <- merge(cross_section_out_post,metabolite_info,by="Metabolite")
+
+datatable(as.data.frame(cross_section_out_post),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50,100)),
+          class="cell-border stripe", caption="LMM Results of Stratified Analysis for Post Intervention with Health Outcomes Cross-Sectionally")
+write.csv(cross_section_out_post, paste("./food_table/Stratified_Cross_section_health_Metabolites_Post_int_",file.name,".csv",sep = ""), row.names=F)
+```
+
+###### Summary Plot of Association Between Salmon Metabolites and Health Outcomes in Post Intervention
+```{r, fig.height=15, fig.width=10, message=FALSE}
+cross_section_out_post_tile <- cross_section_out_post
+cross_section_out_post_tile$value <- ifelse(cross_section_out_post_tile$p_value_Metabolite < 0.05 & cross_section_out_post_tile$FDR_Metabolite < 0.05,"Pass FDR",ifelse(cross_section_out_post_tile$p_value_Metabolite < 0.05 & cross_section_out_post_tile$FDR_Metabolite > 0.05,"Pass P-value","Fail P-value"))
+
+food_health_post <- ggplot(cross_section_out_post_tile, aes(type, Metabolite, p_value_Metabolite=p_value_Metabolite,
+                                                 FDR_Metabolite=FDR_Metabolite,fill=as.character(value))) +
+  geom_tile() + theme_bw() + scale_fill_manual(name="Outcomes" ,values=c("grey","red","blue")) +
+  labs(title="Summary Plot of Association Salmon Metabolites and Health Outcomes in post Intervention")
+ggplotly(food_health_post,tooltip = c("Metabolite","p_value_Metabolite","FDR_Metabolite"))
+```
+
+###### Comparing Pre vs Post 
+```{r}
+## creating dataset to compare pre vs post vs time
+comp_time <- merge(cross_section_out_pre[,c("Metabolite","type","Estimate_Metabolite", "p_value_Metabolite","FDR_Metabolite")],
+                   cross_section_out_post[,c("Metabolite","type","Estimate_Metabolite", "p_value_Metabolite","FDR_Metabolite")],
+                   by=c("Metabolite","type"))
+colnames(comp_time) <- c("Metabolite","type","Estimate_Metabolite_pre","p_value_Metabolite_pre","FDR_Metabolite_pre",
+                         "Estimate_Metabolite_post","p_value_Metabolite_post","FDR_Metabolite_post")
+
+## creating -log10
+comp_time$logP_pre <- -log10(comp_time$p_value_Metabolite_pre)
+comp_time$logP_post <- -log10(comp_time$p_value_Metabolite_post)
+
+datatable(as.data.frame(comp_time),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50,100)),
+          class="cell-border stripe", caption="Comparing LMM Results of Stratified Analysis with Health Outcomes Cross-Sectionally")
+write.csv(comp_time,
+          paste("./food_table/Compare_stratified_Pre_vs_Post_int_",file.name,".csv",sep=""), row.names=F)
+```
+
+###### GGPLOTS Comparing the Stratified Analysis
+```{r}
+## compare estimates of pre vs post, health outcomes are color coded
+ggplot()+
+  geom_point(aes(x=comp_time$Estimate_Metabolite_pre, y=comp_time$Estimate_Metabolite_post, colour=factor(comp_time$type)))+
+  geom_abline(alpha=0.4, color="#000000")+
+  labs(title="Comparing LMM Estimates on Pre vs Post")+
+  theme_bw()
+
+## comparing -log10 of health outcomes were color coded
+ggplot()+
+  geom_point(aes(x=comp_time$logP_pre, y=comp_time$logP_post, colour=factor(comp_time$type)))+
+  geom_abline(alpha=0.4, color="#000000")+
+  labs(title="Comparing LMM -log10 on Pre vs Post")+
+  theme_bw()
+
+## comparing estimates based on each health outcomes
+for(i in outcomes){
+  a <- ggplot()+
+    geom_point(aes(x=comp_time[grepl(i,comp_time$type),"Estimate_Metabolite_pre"],
+                   y=comp_time[grepl(i,comp_time$type),"Estimate_Metabolite_post"]))+
+    geom_abline(alpha=0.4, color="#000000")+
+    labs(title=paste0("Comparing Estimates on Pre vs Post for ", i), x=paste0("Estimate_pre_",i),y=paste0("Estimate_post_",i))+
+    theme_bw()
+  print(a)
+}
+```
+
+##### Stratified Analysis Based on Each Time Points (Pre 1, Post 1, Pre 2, Post 2)
+###### Cross-Sectional Association Between Salmon Metabolites and Health Outcomes in "Pre 1" Intervention
+```{r}
+per_1 <- cross_section_ranked[cross_section_ranked$Period==1,]
+per_2 <- cross_section_ranked[cross_section_ranked$Period==2,]
+per_3 <- cross_section_ranked[cross_section_ranked$Period==3,]
+per_4 <- cross_section_ranked[cross_section_ranked$Period==4,]
+
+### Period 1
+lmod1_per_1 <- vector(mode = "list")
+out_per_1 <- c()
+
+for(i in 1:length(Metabolite)){
+  for(j in 1:length(outcomes)){
+    tryCatch({
+      lmod1_per_1[[i]] <- lm(as.formula(
+        paste(outcomes[j],"~ Age + Sex + ",Metabolite[i],sep = "")),data = per_1)
+
+      res1_per_1 <- cbind(data.frame(summary(lmod1_per_1[[i]])$coefficients),
+                                   Out_type=outcomes[j],
+                                   Metabolite=paste0(Metabolite[i]))
+
+      out_per_1 <- rbind(out_per_1,res1_per_1)
+      },
+      error=function(e){
+        })
+  }
+}
+
+colnames(out_per_1) <- c("Estimate","Std_Error","t_value","p_value","Out_type","Metabolite")
+
+## calculating FDR and LogP
+out_per_1$FDR <- p.adjust(out_per_1$p_value, method = "BH")
+
+## Creating "test_type", so Results Can be Divided Into "Intercept","Age","Sex","Trial", and "Metabolite"
+out_per_1$test_type <- rownames(out_per_1)
+out_per_1 <- out_per_1[!grepl("Intercept",out_per_1$test_type),]
+out_per_1[grepl("Age",out_per_1$test_type),"test_type"] <- "Age"
+out_per_1[grepl("Sex",out_per_1$test_type),"test_type"] <- "Sex"
+out_per_1[grepl("M.",out_per_1$test_type),"test_type"] <- "Metabolite"
+rownames(out_per_1) <- NULL
+out_per_1 <- out_per_1[,!grepl("t_value",colnames(out_per_1))]
+
+## Changing Class to Numeric
+out_per_1[,c("Estimate","Std_Error","p_value","FDR")] <-
+  lapply(out_per_1[,c("Estimate","Std_Error","p_value","FDR")], function(x) {as.numeric(x)})
+
+## Showing 4 Significant Digits
+out_per_1[,c("Estimate","Std_Error")] <- round(out_per_1[,c("Estimate","Std_Error")],digits = 4)
+out_per_1[,c("p_value","FDR")] <- format(out_per_1[,c("p_value","FDR")],digits = 4)
+
+## "num_outcomes" Assigns Numerical Values to Health Outcomes. Column "out_type" is Numerical Values of Health Outcomes
+num_outcomes <- data.frame("Health_out" = outcomes, "type" = as.numeric(factor(outcomes)))
+out_per_1$type <- out_per_1$Out_type
+out_per_1 <- transform(out_per_1,type=as.numeric(factor(type)))
+
+## Reshaping From Long to Wide
+out_per_1 <- reshape(out_per_1,timevar="test_type",idvar=c("Metabolite","type"),direction="wide")
+
+## Modifying Column Names and Removing "Out_type" Columns to Replace with "type"
+colnames(out_per_1) <- gsub("\\.","_",colnames(out_per_1))
+out_per_1 <- out_per_1[,-2]  
+names(out_per_1)[names(out_per_1) == 'Out_type_Age'] <- "type"
+out_per_1 <- out_per_1[, -grep("Out_type", colnames(out_per_1))]
+#out_per_1$type <- ifelse(out_per_1$type==num_outcomes$type,num_outcomes$Health_out,out_per_1$type)
+
+## Removing Unwanted Columns
+out_per_1 <- out_per_1[,grepl("Estimate|p_value|Metabolite|type",colnames(out_per_1))]
+
+## Changing Class to Numeric
+out_per_1[,5:ncol(out_per_1)] <- lapply(out_per_1[,5:ncol(out_per_1)], function(x) {as.numeric(x)})
+out_per_1<-out_per_1[,c("Metabolite","type","Estimate_Metabolite", "p_value_Metabolite","FDR_Metabolite")]
+out_per_1 <- merge(out_per_1,metabolite_info,by="Metabolite")
+
+datatable(as.data.frame(out_per_1),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50,100)),
+          class="cell-border stripe", caption="LMM Results of Stratified Analysis with Health Outcomes for Pre 1")
+write.csv(out_per_1, paste("./food_table/Stratified_health_Metabolites_Period_1_int_",file.name,".csv",sep = ""), row.names=F)
+```
+
+###### Summary Plot of Association Between Salmon Metabolites and Health Outcomes in "Per 1" Intervention
+```{r, fig.height=15, fig.width=10, message=FALSE}
+out_per_1_tile <- out_per_1
+out_per_1_tile$value <- ifelse(out_per_1_tile$p_value_Metabolite < 0.05 & out_per_1_tile$FDR_Metabolite < 0.05,"Pass FDR",ifelse(out_per_1_tile$p_value_Metabolite < 0.05 & out_per_1_tile$FDR_Metabolite > 0.05,"Pass P-value","Fail P-value"))
+
+food_health_per_1 <- ggplot(out_per_1_tile, aes(type, Metabolite, p_value_Metabolite=p_value_Metabolite,
+                                                 FDR_Metabolite=FDR_Metabolite,fill=as.character(value))) +
+  geom_tile() + theme_bw() + scale_fill_manual(name="Outcomes" ,values=c("grey","red","blue")) +
+  labs(title="Summary Plot of Association Salmon Metabolites and Health Outcomes in Per 1")
+ggplotly(food_health_per_1,tooltip = c("Metabolite","p_value_Metabolite","FDR_Metabolite"))
+```
+
+###### Cross-Sectional Association Between Salmon Metabolites and Health Outcomes in "Post 1" Intervention
+```{r}
+### Period 2
+lmod1_per_2 <- vector(mode = "list")
+out_per_2 <- c()
+
+for(i in 1:length(Metabolite)){
+  for(j in 1:length(outcomes)){
+    tryCatch({
+      lmod1_per_2[[i]] <- lm(as.formula(
+        paste(outcomes[j],"~ Age + Sex + ",Metabolite[i],sep = "")),data = per_2)
+
+      res1_per_2 <- cbind(data.frame(summary(lmod1_per_2[[i]])$coefficients),
+                                   Out_type=outcomes[j],
+                                   Metabolite=paste0(Metabolite[i]))
+
+      out_per_2 <- rbind(out_per_2,res1_per_2)
+      },
+      error=function(e){
+        })
+  }
+}
+
+colnames(out_per_2) <- c("Estimate","Std_Error","t_value","p_value","Out_type","Metabolite")
+
+## calculating FDR and LogP
+out_per_2$FDR <- p.adjust(out_per_2$p_value, method = "BH")
+
+## Creating "test_type", so Results Can be Divided Into "Intercept","Age","Sex","Trial", and "Metabolite"
+out_per_2$test_type <- rownames(out_per_2)
+out_per_2 <- out_per_2[!grepl("Intercept",out_per_2$test_type),]
+out_per_2[grepl("Age",out_per_2$test_type),"test_type"] <- "Age"
+out_per_2[grepl("Sex",out_per_2$test_type),"test_type"] <- "Sex"
+out_per_2[grepl("M.",out_per_2$test_type),"test_type"] <- "Metabolite"
+rownames(out_per_2) <- NULL
+out_per_2 <- out_per_2[,!grepl("t_value",colnames(out_per_2))]
+
+## Changing Class to Numeric
+out_per_2[,c("Estimate","Std_Error","p_value","FDR")] <-
+  lapply(out_per_2[,c("Estimate","Std_Error","p_value","FDR")], function(x) {as.numeric(x)})
+
+## Showing 4 Significant Digits
+out_per_2[,c("Estimate","Std_Error")] <- round(out_per_2[,c("Estimate","Std_Error")],digits = 4)
+out_per_2[,c("p_value","FDR")] <- format(out_per_2[,c("p_value","FDR")],digits = 4)
+
+## "num_outcomes" Assigns Numerical Values to Health Outcomes. Column "out_type" is Numerical Values of Health Outcomes
+num_outcomes <- data.frame("Health_out"=outcomes, "type"=as.numeric(factor(outcomes)))
+out_per_2$type <- out_per_2$Out_type
+out_per_2 <- transform(out_per_2,type=as.numeric(factor(type)))
+
+## Reshaping From Long to Wide
+out_per_2 <- reshape(out_per_2,timevar="test_type",idvar=c("Metabolite","type"),direction="wide")
+
+## Modifying Column Names and Removing "Out_type" Columns to Replace with "type"
+colnames(out_per_2) <- gsub("\\.","_",colnames(out_per_2))
+out_per_2 <- out_per_2[, -grep("Out_type", colnames(out_per_2))]
+out_per_2$type <- ifelse(out_per_2$type==num_outcomes$type,num_outcomes$Health_out,out_per_2$type)
+
+## Removing Unwanted Columns
+out_per_2 <- out_per_2[,grepl("Estimate|p_value|Metabolite|type",colnames(out_per_2))]
+
+## Changing Class to Numeric
+out_per_2[,3:ncol(out_per_2)] <- lapply(out_per_2[,3:ncol(out_per_2)], function(x) {as.numeric(x)})
+
+out_per_2 <- merge(out_per_2,metabolite_info,by="Metabolite")
+
+datatable(as.data.frame(out_per_2),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50,100)),
+          class="cell-border stripe", caption="LMM Results of Stratified Analysis with Health Outcomes for Post 1")
+write.csv(out_per_2,
+          "./food_table/Stratified_health_Metabolites_Period_2_int.csv", row.names=F)
+```
+
+###### Summary Plot of Association Between Salmon Metabolites and Health Outcomes in "Per 2" Intervention
+```{r, fig.height=15, fig.width=10, message=FALSE}
+out_per_2_tile <- out_per_2
+out_per_2_tile$value <- ifelse(out_per_2_tile$p_value_Metabolite < 0.05 & out_per_2_tile$FDR_Metabolite < 0.05,"Pass FDR",ifelse(out_per_2_tile$p_value_Metabolite < 0.05 & out_per_2_tile$FDR_Metabolite > 0.05,"Pass P-value","Fail P-value"))
+
+food_health_per_2 <- ggplot(out_per_2_tile, aes(type, Metabolite, p_value_Metabolite=p_value_Metabolite,
+                                                 FDR_Metabolite=FDR_Metabolite,fill=as.character(value))) +
+  geom_tile() + theme_bw() + scale_fill_manual(name="Outcomes" ,values=c("grey","red","blue")) +
+  labs(title="Summary Plot of Association Salmon Metabolites and Health Outcomes in Per 2")
+ggplotly(food_health_per_2,tooltip = c("Metabolite","p_value_Metabolite","FDR_Metabolite"))
+```
+
+###### Cross-Sectional Association Between Salmon Metabolites and Health Outcomes in "Pre 2" Intervention
+```{r}
+### Period 3
+lmod1_per_3 <- vector(mode = "list")
+out_per_3 <- c()
+
+for(i in 1:length(Metabolite)){
+  for(j in 1:length(outcomes)){
+    tryCatch({
+      lmod1_per_3[[i]] <- lm(as.formula(
+        paste(outcomes[j],"~ Age + Sex + ",Metabolite[i],sep = "")),data = per_3)
+
+      res1_per_3 <- cbind(data.frame(summary(lmod1_per_3[[i]])$coefficients),
+                                   Out_type=outcomes[j],
+                                   Metabolite=paste0(Metabolite[i]))
+
+      out_per_3 <- rbind(out_per_3,res1_per_3)
+      },
+      error=function(e){
+        })
+  }
+}
+
+colnames(out_per_3) <- c("Estimate","Std_Error","t_value","p_value","Out_type","Metabolite")
+
+## calculating FDR and LogP
+out_per_3$FDR <- p.adjust(out_per_3$p_value, method = "BH")
+
+## Creating "test_type", so Results Can be Divided Into "Intercept","Age","Sex","Trial", and "Metabolite"
+out_per_3$test_type <- rownames(out_per_3)
+out_per_3 <- out_per_3[!grepl("Intercept",out_per_3$test_type),]
+out_per_3[grepl("Age",out_per_3$test_type),"test_type"] <- "Age"
+out_per_3[grepl("Sex",out_per_3$test_type),"test_type"] <- "Sex"
+out_per_3[grepl("M.",out_per_3$test_type),"test_type"] <- "Metabolite"
+rownames(out_per_3) <- NULL
+out_per_3 <- out_per_3[,!grepl("t_value",colnames(out_per_3))]
+
+## Changing Class to Numeric
+out_per_3[,c("Estimate","Std_Error","p_value","FDR")] <-
+  lapply(out_per_3[,c("Estimate","Std_Error","p_value","FDR")], function(x) {as.numeric(x)})
+
+## Showing 4 Significant Digits
+out_per_3[,c("Estimate","Std_Error")] <- round(out_per_3[,c("Estimate","Std_Error")],digits = 4)
+out_per_3[,c("p_value","FDR")] <- format(out_per_3[,c("p_value","FDR")],digits = 4)
+
+## "num_outcomes" Assigns Numerical Values to Health Outcomes. Column "out_type" is Numerical Values of Health Outcomes
+num_outcomes <- data.frame("Health_out"=outcomes, "type"=as.numeric(factor(outcomes)))
+out_per_3$type <- out_per_3$Out_type
+out_per_3 <- transform(out_per_3,type=as.numeric(factor(type)))
+
+## Reshaping From Long to Wide
+out_per_3 <- reshape(out_per_3,timevar="test_type",idvar=c("Metabolite","type"),direction="wide")
+
+## Modifying Column Names and Removing "Out_type" Columns to Replace with "type"
+colnames(out_per_3) <- gsub("\\.","_",colnames(out_per_3))
+out_per_3 <- out_per_3[, -grep("Out_type", colnames(out_per_3))]
+out_per_3$type <- ifelse(out_per_3$type==num_outcomes$type,num_outcomes$Health_out,out_per_3$type)
+
+## Removing Unwanted Columns
+out_per_3 <- out_per_3[,grepl("Estimate|p_value|Metabolite|type",colnames(out_per_3))]
+
+## Changing Class to Numeric
+out_per_3[,3:ncol(out_per_3)] <- lapply(out_per_3[,3:ncol(out_per_3)], function(x) {as.numeric(x)})
+
+out_per_3 <- merge(out_per_3,metabolite_info,by="Metabolite")
+
+datatable(as.data.frame(out_per_3),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50,100)),
+          class="cell-border stripe", caption="LMM Results of Stratified Analysis with Health Outcomes for Pre 2")
+write.csv(out_per_3,
+          "./food_table/Stratified_health_Metabolites_Period_3_int.csv", row.names=F)
+```
+
+###### Summary Plot of Association Between Salmon Metabolites and Health Outcomes in "Per 3" Intervention
+```{r, fig.height=15, fig.width=10, message=FALSE}
+out_per_3_tile <- out_per_3
+out_per_3_tile$value <- ifelse(out_per_3_tile$p_value_Metabolite < 0.05 & out_per_3_tile$FDR_Metabolite < 0.05,"Pass FDR",ifelse(out_per_3_tile$p_value_Metabolite < 0.05 & out_per_3_tile$FDR_Metabolite > 0.05,"Pass P-value","Fail P-value"))
+
+food_health_per_3 <- ggplot(out_per_3_tile, aes(type, Metabolite, p_value_Metabolite=p_value_Metabolite,
+                                                 FDR_Metabolite=FDR_Metabolite,fill=as.character(value))) +
+  geom_tile() + theme_bw() + scale_fill_manual(name="Outcomes" ,values=c("grey","red","blue")) +
+  labs(title="Summary Plot of Association Salmon Metabolites and Health Outcomes in Per 3")
+ggplotly(food_health_per_3,tooltip = c("Metabolite","p_value_Metabolite","FDR_Metabolite"))
+```
+
+###### Cross-Sectional Association Between Salmon Metabolites and Health Outcomes in "Post 2" Intervention
+```{r}
+### Period 4
+lmod1_per_4 <- vector(mode = "list")
+out_per_4 <- c()
+
+for(i in 1:length(Metabolite)){
+  for(j in 1:length(outcomes)){
+    tryCatch({
+      lmod1_per_4[[i]] <- lm(as.formula(
+        paste(outcomes[j],"~ Age + Sex + ",Metabolite[i],sep = "")),data = per_4)
+
+      res1_per_4 <- cbind(data.frame(summary(lmod1_per_4[[i]])$coefficients),
+                                   Out_type=outcomes[j],
+                                   Metabolite=paste0(Metabolite[i]))
+
+      out_per_4 <- rbind(out_per_4,res1_per_4)
+      },
+      error=function(e){
+        })
+  }
+}
+
+colnames(out_per_4) <- c("Estimate","Std_Error","t_value","p_value","Out_type","Metabolite")
+
+## calculating FDR and LogP
+out_per_4$FDR <- p.adjust(out_per_4$p_value, method = "BH")
+
+## Creating "test_type", so Results Can be Divided Into "Intercept","Age","Sex","Trial", and "Metabolite"
+out_per_4$test_type <- rownames(out_per_4)
+out_per_4 <- out_per_4[!grepl("Intercept",out_per_4$test_type),]
+out_per_4[grepl("Age",out_per_4$test_type),"test_type"] <- "Age"
+out_per_4[grepl("Sex",out_per_4$test_type),"test_type"] <- "Sex"
+out_per_4[grepl("M.",out_per_4$test_type),"test_type"] <- "Metabolite"
+rownames(out_per_4) <- NULL
+out_per_4 <- out_per_4[,!grepl("t_value",colnames(out_per_4))]
+
+## Changing Class to Numeric
+out_per_4[,c("Estimate","Std_Error","p_value","FDR")] <-
+  lapply(out_per_4[,c("Estimate","Std_Error","p_value","FDR")], function(x) {as.numeric(x)})
+
+## Showing 4 Significant Digits
+out_per_4[,c("Estimate","Std_Error")] <- round(out_per_4[,c("Estimate","Std_Error")],digits = 4)
+out_per_4[,c("p_value","FDR")] <- format(out_per_4[,c("p_value","FDR")],digits = 4)
+
+## "num_outcomes" Assigns Numerical Values to Health Outcomes. Column "out_type" is Numerical Values of Health Outcomes
+num_outcomes <- data.frame("Health_out"=outcomes, "type"=as.numeric(factor(outcomes)))
+out_per_4$type <- out_per_4$Out_type
+out_per_4 <- transform(out_per_4,type=as.numeric(factor(type)))
+
+## Reshaping From Long to Wide
+out_per_4 <- reshape(out_per_4,timevar="test_type",idvar=c("Metabolite","type"),direction="wide")
+
+## Modifying Column Names and Removing "Out_type" Columns to Replace with "type"
+colnames(out_per_4) <- gsub("\\.","_",colnames(out_per_4))
+out_per_4 <- out_per_4[, -grep("Out_type", colnames(out_per_4))]
+out_per_4$type <- ifelse(out_per_4$type==num_outcomes$type,num_outcomes$Health_out,out_per_4$type)
+
+## Removing Unwanted Columns
+out_per_4 <- out_per_4[,grepl("Estimate|p_value|Metabolite|type",colnames(out_per_4))]
+
+## Changing Class to Numeric
+out_per_4[,3:ncol(out_per_4)] <- lapply(out_per_4[,3:ncol(out_per_4)], function(x) {as.numeric(x)})
+
+out_per_4 <- merge(out_per_4,metabolite_info,by="Metabolite")
+
+datatable(as.data.frame(out_per_4),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50,100)),
+          class="cell-border stripe", caption="LMM Results of Stratified Analysis with Health Outcomes for Post 2")
+write.csv(out_per_4,
+          "./food_table/Stratified_health_Metabolites_Period_4_int.csv", row.names=F)
+```
+
+###### Summary Plot of Association Between Salmon Metabolites and Health Outcomes in "Per 4" Intervention
+```{r, fig.height=15, fig.width=10, message=FALSE}
+out_per_4_tile <- out_per_4
+out_per_4_tile$value <- ifelse(out_per_4_tile$p_value_Metabolite < 0.05 & out_per_4_tile$FDR_Metabolite < 0.05,"Pass FDR",ifelse(out_per_4_tile$p_value_Metabolite < 0.05 & out_per_4_tile$FDR_Metabolite > 0.05,"Pass P-value","Fail P-value"))
+
+food_health_per_4 <- ggplot(out_per_4_tile, aes(type, Metabolite, p_value_Metabolite=p_value_Metabolite,
+                                                 FDR_Metabolite=FDR_Metabolite,fill=as.character(value))) +
+  geom_tile() + theme_bw() + scale_fill_manual(name="Outcomes" ,values=c("grey","red","blue")) +
+  labs(title="Summary Plot of Association Salmon Metabolites and Health Outcomes in Per 4")
+ggplotly(food_health_per_4,tooltip = c("Metabolite","p_value_Metabolite","FDR_Metabolite"))
+```
+
+### Cross-Sectional Association Between Sum of Salmon Metabolite Ranks and Health Outcomes
+
+```{r}
+cross_section_ranked$sum_ranks <- rowSums(cross_section_ranked[,Metabolite],na.rm = T)
+```
+      
+#### Association Between Sum of Salmon Metabolites Ranks and Health Outcomes
+When Looking at the Sum of Ranked prediced Salmon Metabolites, None of the Health Outcomes had FDR Value Below 0.05. 
+```{r message=FALSE}
+lmod1_ranked_1_sum <- vector(mode = "list", length = 2)
+cross_section_out_sum <- c()
+      
+for(j in 1:length(outcomes)){
+  tryCatch({
+    lmod1_ranked_1_sum[[j]] <- lmer(as.formula(paste0(outcomes[j],"~ Age + Sex + Period + sum_ranks + (1|StudyID)",
+                                                  sep = "")), data = cross_section_ranked)
+    
+    res1_method1_sum <- cbind(data.frame(summary(lmod1_ranked_1_sum[[j]])$coefficients),
+                              Singular_Fit = isSingular(lmod1_ranked_1_sum[[j]]), Out_type=outcomes[j])
+    
+    cross_section_out_sum <- rbind(cross_section_out_sum,res1_method1_sum)
+    },
+    error=function(e){
+      })
+}
+
+colnames(cross_section_out_sum) <- c("Estimate","Std_Error","df","t_value","p_value","Singular_fit","Out_type")
+      
+## calculating FDR and LogP
+cross_section_out_sum$FDR <- p.adjust(cross_section_out_sum$p_value, method = "BH")
+
+## Creating "test_type", so Results Can be Divided Into "Intercept","Age","Sex","Trial", and "Metabolite"
+cross_section_out_sum$test_type <- rownames(cross_section_out_sum)
+cross_section_out_sum <- cross_section_out_sum[!grepl("Intercept",cross_section_out_sum$test_type),]
+cross_section_out_sum[grepl("Age",cross_section_out_sum$test_type),"test_type"] <- "Age"
+cross_section_out_sum[grepl("Sex",cross_section_out_sum$test_type),"test_type"] <- "Sex"
+cross_section_out_sum[grepl("Trial",cross_section_out_sum$test_type),"test_type"] <- "Trial"
+cross_section_out_sum[grepl("sum",cross_section_out_sum$test_type),"test_type"] <- "Sum_ranks"
+cross_section_out_sum[grepl("Period2",cross_section_out_sum$test_type),"test_type"] <- "period_2"
+cross_section_out_sum[grepl("Period3",cross_section_out_sum$test_type),"test_type"] <- "period_3"
+cross_section_out_sum[grepl("Period4",cross_section_out_sum$test_type),"test_type"] <- "period_4"
+rownames(cross_section_out_sum) <- NULL
+cross_section_out_sum <- cross_section_out_sum[,!grepl("t_value",colnames(cross_section_out_sum))]
+
+## Changing Class to Numeric
+cross_section_out_sum[,c("Estimate","Std_Error","df","p_value","FDR")] <- 
+  lapply(cross_section_out_sum[,c("Estimate","Std_Error","df","p_value","FDR")], function(x) {as.numeric(x)})
+
+## Showing 4 Significant Digits
+cross_section_out_sum[,c("Estimate","Std_Error")] <- round(cross_section_out_sum[,c("Estimate","Std_Error")],digits = 4)
+cross_section_out_sum[,c("df","p_value","FDR")] <- format(cross_section_out_sum[,c("df","p_value","FDR")],digits = 4)
+
+## Reshaping from Long to Wide
+cross_section_out_sum <- reshape(cross_section_out_sum,timevar="test_type",idvar="Out_type",direction="wide")
+colnames(cross_section_out_sum) <- gsub("\\.","_",colnames(cross_section_out_sum))
+
+## Removing Unwanted Columns      
+cross_section_out_sum <- cross_section_out_sum[,grepl("Estimate|p_value|Sum_ranks|type",colnames(cross_section_out_sum))]
+
+## Changing Class to Numeric
+cross_section_out_sum[,2:ncol(cross_section_out_sum)] <- lapply(cross_section_out_sum[,2:ncol(cross_section_out_sum)], function(x) {as.numeric(x)})
+      
+## Changing to "Singular_fit" to TRUE and FALSE
+singular_col <- grep("Singular",colnames(cross_section_out_sum))
+for(i in singular_col){
+  cross_section_out_sum[,i] <- ifelse(cross_section_out_sum[,i]==0,"FALSE","TRUE")
+}
+
+cross_section_out_sum <- cross_section_out_sum[,c("Out_type","Estimate_Sum_ranks","p_value_Sum_ranks","FDR_Sum_ranks")]
+
+datatable(as.data.frame(cross_section_out_sum),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50)),
+          class="cell-border stripe", caption="LMM Results For Sum of Ranks for predicted Salmon Metabolites with Health Outcomes Cross-Sectionally")
+
+
+write.csv(cross_section_out_sum,
+          paste("./food_table/Cross_section_sum_Health_Metabolites_",file.name,".csv",sep = ""), row.names=F)
+```
+
+#### GGPLOT for Sum of Metabolite Ranks
+##### Scatter Plot
+```{r message=FALSE}
+for(j in 1:length(outcomes)){
+ cross_section_plot <- ggplot(cross_section_ranked,aes(cross_section_ranked[,"sum_ranks"],cross_section_ranked[,outcomes[j]]))+
+   geom_point()+ theme_bw()+
+   labs(x="Sum of Ranks", y=paste(outcomes[j], "Total"), title=paste(outcomes[j], "plot Accross All Individuals"))+
+   theme(plot.title = element_text(hjust = 0.5))
+ print(cross_section_plot)
+}
+```
+      
+##### Boxplot of Metabolites and Sex
+```{r}
+cross_section_boxplot <- ggplot(cross_section_ranked,aes(Sex,sum_ranks,fill=Sex))+
+ theme_bw()+geom_boxplot()+
+ labs(x="Sex", y="Sum of Ranks",title="Sum of Ranks vs Sex" )+
+   theme(plot.title = element_text(size=10,hjust=0.5))
+print(cross_section_boxplot)
+```
+
+## Association Between Salmon Metabolites and Health Outcomes in Change Analysis
+In this section we use used the previously ranked normalized values of "cross_section_ranked", Next Calculate Difference in Rank within Each Trial. First Method uses the Difference in Ranks to Apply LMM to Assess Association with Health Outcomes. Second Method uses The Difference in Ranks to Sum Metabolites Ranking for Each Individual and Specific Trial, and then Apply LMM to Assess Association between Change in Ranked preditced Salmon Metabolites and Change in Health Outcomes. Also Each of These Approaches has two Sub-Methods to Assess Change in Ranks of predicted Salmon Metabolites. First Formula to Assess change in Ranks of predicted Salmon Metabolite Excludes any Covariates. Second Formula to Assess Change in Ranks of predicted Salmon Metabolite Includes Covariates Such as "Age" and "Sex", in which "Age" is scaled.
+
+### Association Between Change in Salmon Metabolite Ranks and Change in Health Outcomes
+```{r message=FALSE}
+lmod1_ranked_2 <- vector(mode = "list", length = 2)
+change_analysis_out <- c()
+      
+for(i in 1:length(Metabolite)){
+  for(j in 1:length(outcomes)){
+    tryCatch({
+      lmod1_ranked_2[[i]] <- lmer(as.formula(paste(outcomes[j],"~ Age + Sex +",Metabolite[i],"+ (1|StudyID)",
+                                                   sep = "")),data = difference_ranked_change_analysis)
+      
+      res1_change_analysis <- cbind(data.frame(summary(lmod1_ranked_2[[i]])$coefficients),
+                             Singular_Fit = isSingular(lmod1_ranked_2[[i]]),
+                             Out_type=outcomes[j],
+                             Metabolite=paste0(Metabolite[i]))
+      
+      change_analysis_out <- rbind(change_analysis_out,res1_change_analysis)
+      },
+      error=function(e){
+        })
+  }
+}
+
+colnames(change_analysis_out) <- c("Estimate","Std_Error","df","t_value","p_value","Singular_fit","Out_type","Metabolite")
+      
+## Calculating FDR and LogP
+change_analysis_out$FDR <- p.adjust(change_analysis_out$p_value, method = "BH")
+
+## Creating "test_type", so Results Can be Divided Into "Intercept","Age","Sex","Trial", and "Metabolite"
+change_analysis_out$test_type <- rownames(change_analysis_out)
+change_analysis_out <- change_analysis_out[!grepl("Intercept",change_analysis_out$test_type),]
+change_analysis_out[grepl("Age",change_analysis_out$test_type),"test_type"] <- "Age"
+change_analysis_out[grepl("Sex",change_analysis_out$test_type),"test_type"] <- "Sex"
+change_analysis_out[grepl("M.",change_analysis_out$test_type),"test_type"] <- "Metabolite"
+rownames(change_analysis_out) <- NULL
+change_analysis_out <- change_analysis_out[,!grepl("t_value",colnames(change_analysis_out))]
+
+## Changing Class to Numeric
+change_analysis_out[,c("Estimate","Std_Error","df","p_value","FDR")] <- 
+  lapply(change_analysis_out[,c("Estimate","Std_Error","df","p_value","FDR")], function(x) {as.numeric(x)})
+
+## Showing 4 Significant Digits
+change_analysis_out[,c("Estimate","Std_Error")] <- round(change_analysis_out[,c("Estimate","Std_Error")],digits = 4)
+change_analysis_out[,c("df","p_value","FDR")] <- format(change_analysis_out[,c("df","p_value","FDR")],digits = 4)
+
+## "num_outcomes" Assigns Numerical Values to Health Outcomes. Column "out_type" is Numerical Values of Health Outcomes
+num_outcomes <- data.frame("Health_out"=outcomes, "type"=as.numeric(factor(outcomes)))
+change_analysis_out$type <- change_analysis_out$Out_type
+change_analysis_out <- transform(change_analysis_out,type=as.numeric(factor(type)))
+
+## Modifying Column Names and Removing "Out_type" Columns to Replace it With "type"      
+change_analysis_out <- reshape(change_analysis_out,timevar="test_type",idvar=c("Metabolite","type"),direction="wide")
+colnames(change_analysis_out) <- gsub("\\.","_",colnames(change_analysis_out))
+change_analysis_out <- change_analysis_out[,-2]  
+names(change_analysis_out)[names(change_analysis_out) == 'Out_type_Age'] <- "type"
+change_analysis_out <- change_analysis_out[, -grep("Out_type", colnames(change_analysis_out))]
+#change_analysis_out$type <- ifelse(change_analysis_out$type==num_outcomes$type,num_outcomes$Health_out,change_analysis_out$type)
+
+## Removing Unwanted Columns
+change_analysis_out <- change_analysis_out[,grepl("Estimate|p_value|Metabolite|type",colnames(change_analysis_out))]
+
+## Changing Class to Numeric
+change_analysis_out[,5:ncol(change_analysis_out)] <- lapply(change_analysis_out[,5:ncol(change_analysis_out)], function(x) {as.numeric(x)})
+      
+## Changing to "Singular_fit" to TRUE and FALSE
+singular_col_2 <- grep("Singular",colnames(change_analysis_out))
+for(i in singular_col_2){
+  change_analysis_out[,i] <- ifelse(change_analysis_out[,i]==0,"FALSE","TRUE")
+}
+colnames(change_analysis_out)
+change_analysis_out <- change_analysis_out[,c("Metabolite","type", "Estimate_Metabolite", "p_value_Metabolite", "FDR_Metabolite", "Std_Error_Metabolite")]
+change_analysis_out <- merge(change_analysis_out,metabolite_info,by="Metabolite")
+      
+datatable(as.data.frame(change_analysis_out),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50)),
+          class="cell-border stripe", caption="LMM Results on For Change in Ranks of predicted Salmon Metabolites wtih Change in Health Outcomes")
+write.csv(change_analysis_out,
+          paste("./food_table/change_in_Health_Metabolites_",file.name,".csv",sep = ""), row.names=F)
+```
+      
+#### Significant Metabolites  
+There were 25 Possible Associations Between Change in Salmon Metabolites Ranks and Change in Health Outcomes That had a FDR Value Below 0.05. In Which 4 were Related to ApoB, 12 to Chol_T, 1 to Chol_T_HDL, 3 to HDL, 1 to HDL_LDL, 3 to LDL, 1 to TG. 
+```{r}
+sig_2_out <- change_analysis_out[change_analysis_out$p_value_Metabolite < 0.05,]
+sig_2_out_FDR <- change_analysis_out[change_analysis_out$FDR_Metabolite < 0.05,]
+
+datatable(as.data.frame(sig_2_out),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50)),
+          class="cell-border stripe", caption="Significant Metabolites of For Change in Ranks of predicted Salmon Metabolites wtih Change in Health Outcomes")
+```
+
+#### Summary Plot of Association Between Change in Salmon Metabolites Ranks and Change in Health Outcomes
+```{r, fig.height=15, fig.width=10, message=FALSE}
+change_analysis_out_tile <- change_analysis_out
+change_analysis_out_tile$value <- ifelse(change_analysis_out_tile$p_value_Metabolite < 0.05 & change_analysis_out_tile$FDR_Metabolite < 0.05,"Pass FDR",ifelse(change_analysis_out_tile$p_value_Metabolite < 0.05 & change_analysis_out_tile$FDR_Metabolite > 0.05,"Pass P-value","Fail P-value"))
+
+food_health_change <- ggplot(change_analysis_out_tile, aes(type, Metabolite, p_value_Metabolite=p_value_Metabolite,
+                                                 FDR_Metabolite=FDR_Metabolite,fill=as.character(value))) +
+  geom_tile() + theme_bw() + scale_fill_manual(name="Outcomes" ,values=c("grey","red","blue")) +
+  labs(title="Summary Plot of Association Change Salmon Metabolites and Change Health Outcomes")
+ggplotly(food_health_change,tooltip = c("Metabolite","p_value_Metabolite","FDR_Metabolite"))
+```
+
+#### GGPLOT for Significant Metabolites
+##### Scatter Plot
+```{r}
+if(nrow(sig_2_out)>0){
+  for(i in 1:nrow(sig_2_out)){
+    change_analysis_plot <- ggplot(difference_ranked_change_analysis,aes(x=difference_ranked_change_analysis[,sig_2_out[i,"Metabolite"]],
+                                                           y=difference_ranked_change_analysis[,sig_2_out[i,"type"]]))+
+      geom_point(color="black")+ theme_bw()+
+      labs(x="Rank", y=paste(sig_2_out[i,8],"Total"),
+           title=paste0(sig_2_out[i,"type"],"plot of",sig_2_out[i,"Metabolite"],":",sig_2_out[i,"Compound"]))+
+      theme(plot.title = element_text(size=10,hjust = 0.5))
+    print(change_analysis_plot)
+  }
+}
+```
+
+##### Boxplot of Metabolites and Sex
+```{r}
+sig_2_out_unique <- unique(sig_2_out$Metabolite)
+if(length(sig_2_out_unique)>0){
+  for(i in sig_2_out_unique){
+    change_analysis_boxplot <- ggplot(difference_ranked_change_analysis,aes(Sex, difference_ranked_change_analysis[,i],fill=Sex))+
+      geom_boxplot()+ theme_bw()+
+      labs(x="Sex", y="Ranks",
+           title=paste(i," : ",metabolite_info[grepl(i,metabolite_info$Metabolite),"Compound"], " vs Sex"))+
+      theme(plot.title = element_text(hjust = 0.5))
+    print(change_analysis_boxplot)
+  }
+}
+```
+
+### Association Between Sum of Change in Salmon Metabolites Ranks and Change in Health Outcomes
+Replacing Missing Values with Zero and then Sum      
+```{r}
+missing_names <- colnames(cross_section_normalized[,Metabolite])[apply(cross_section_normalized[,Metabolite],2,min)==-999]
+
+for(i in missing_names){
+  change_analysis_ranked[,i] <- ifelse(change_analysis_ranked[,i]==min(change_analysis_ranked[,i]),0,change_analysis_ranked[,i])
+}
+
+change_analysis_ranked$sum_ranks <- rowSums(change_analysis_ranked[,Metabolite],na.rm = T)
+
+datatable(as.data.frame(change_analysis_ranked),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,buttons=c("excel","csv"),pageLength=10,
+                       lengthMenu=c(20,25,50)),
+          class="cell-border stripe", caption="Replacing Missing Values with Zero")
+```
+      
+Calculating Difference of Sum Within Each Trial 
+```{r}
+difference_ranked_change_analysis_sum <- c()
+      
+for(j in subject_change_analysis){
+  tmp.dat_change_analysis_sum <- change_analysis_ranked[str_detect(change_analysis_ranked$StudyID, j),]
+  
+  for(k in 1:2){
+    if(sum(tmp.dat_change_analysis_sum$Trial == k) == 2){
+      tmp.dat.trial_change_analysis_sum <- tmp.dat_change_analysis_sum[tmp.dat_change_analysis_sum$Trial == k,]
+      
+      mets.dif_change_analysis_sum <- as.data.frame(tmp.dat.trial_change_analysis_sum[grepl("post",tmp.dat.trial_change_analysis_sum$Time),
+                                                                "sum_ranks"]-
+                                           tmp.dat.trial_change_analysis_sum[grepl("pre",tmp.dat.trial_change_analysis_sum$Time),
+                                                                  "sum_ranks"])
+      
+      mets.dif_change_analysis_sum <- cbind(StudyID = j, Trial = k, Age = unique(tmp.dat.trial_change_analysis_sum$Age),
+                                 Sex = unique(tmp.dat.trial_change_analysis_sum$Sex),mets.dif_change_analysis_sum)
+      
+      difference_ranked_change_analysis_sum <- rbind(difference_ranked_change_analysis_sum, mets.dif_change_analysis_sum)
+    }
+  }
+}
+
+colnames(difference_ranked_change_analysis_sum)[5] <- "sum_diff"
+      
+datatable(as.data.frame(difference_ranked_change_analysis_sum),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,buttons=c("excel","csv"),pageLength=10,
+                       lengthMenu=c(20,25,50)),
+          class="cell-border stripe", caption="Difference in Sum of Metabolites Within Each Trial")
+```
+      
+
+```{r}
+outcomes <- c("SBP","DBP","Insulin","Chol_T","TG","LDL","HDL","CRP","ApoB","HDL_LDL","Chol_T_HDL")
+
+## Merging with the Health Outcome File
+difference_ranked_change_analysis_sum <- merge(difference_ranked_change_analysis_sum, diff_in_health_outcome, by = c("StudyID","Trial"))
+
+## Cheacking Class
+difference_ranked_change_analysis_sum$StudyID <- as.factor(difference_ranked_change_analysis_sum$StudyID)
+      
+difference_ranked_change_analysis_sum[,outcomes] <- lapply(difference_ranked_change_analysis_sum[,outcomes], function(x) {
+  if(is.integer(x))
+    as.numeric(as.character(x))
+  else x
+  })
+```
+      
+#### Association Between Sum of Change in Salmon Metabolites Ranks and Change in Health Outcomes
+When Looking at the Change in Sum of Ranked predicted Salmon Metabolites, None of Health Outcomes had a FDR Below 0.05 Value.
+```{r message=FALSE}
+lmod1_ranked_2_sum <- vector(mode = "list", length = 2)
+change_analysis_sum_out <- c()
+      
+for(j in 1:length(outcomes)){
+  tryCatch({
+    lmod1_ranked_2_sum[[j]] <- lmer(as.formula(paste(outcomes[j],"~ Age + Sex + sum_diff + (1|StudyID)",
+                                                 sep = "")), data = difference_ranked_change_analysis_sum)
+    
+    res1_met_2_sum <- cbind(data.frame(summary(lmod1_ranked_2_sum[[j]])$coefficients),
+                        Singular_Fit = isSingular(lmod1_ranked_2_sum[[j]]), Out_type=outcomes[j])
+    
+    change_analysis_sum_out <- rbind(change_analysis_sum_out,res1_met_2_sum)
+    },
+    error=function(e){
+      })
+}
+
+colnames(change_analysis_sum_out) <- c("Estimate","Std_Error","df","t_value","p_value","Singular_fit","Out_type")
+      
+## calculating FDR and LogP
+change_analysis_sum_out$FDR <- p.adjust(change_analysis_sum_out$p_value, method = "BH")
+
+## Creating "test_type", so Results Can be Divided Into "Intercept","Age","Sex", and "Metabolite"
+change_analysis_sum_out$test_type <- rownames(change_analysis_sum_out)
+change_analysis_sum_out <- change_analysis_sum_out[!grepl("Intercept",change_analysis_sum_out$test_type),]
+change_analysis_sum_out[grepl("Age",change_analysis_sum_out$test_type),"test_type"] <- "Age"
+change_analysis_sum_out[grepl("Sex",change_analysis_sum_out$test_type),"test_type"] <- "Sex"
+change_analysis_sum_out[grepl("sum",change_analysis_sum_out$test_type),"test_type"] <- "sum_diff"
+rownames(change_analysis_sum_out) <- NULL
+change_analysis_sum_out <- change_analysis_sum_out[,!grepl("t_value",colnames(change_analysis_sum_out))]
+
+## Showing 4 Significant Digits
+change_analysis_sum_out[,c("Estimate","Std_Error","df","p_value","FDR")] <-
+  format(change_analysis_sum_out[,c("Estimate","Std_Error","df","p_value","FDR")],digits=4)
+      
+## Reshaping From Long to Wide
+change_analysis_sum_out <- reshape(change_analysis_sum_out,timevar="test_type",idvar="Out_type",direction="wide")
+colnames(change_analysis_sum_out) <- gsub("\\.","_",colnames(change_analysis_sum_out))
+      
+## Removing Unwanted Columns
+change_analysis_sum_out <- change_analysis_sum_out[,grepl("Estimate|p_value|sum|type",colnames(change_analysis_sum_out))]
+
+## Changing Class to Numeric
+change_analysis_sum_out[,2:ncol(change_analysis_sum_out)] <- lapply(change_analysis_sum_out[,2:ncol(change_analysis_sum_out)], function(x) {as.numeric(x)})
+      
+## Changing to "Singular_fit" to TRUE and FALSE
+singular_col_2_sum <- grep("Singular",colnames(change_analysis_sum_out))
+for(i in singular_col_2_sum){
+  change_analysis_sum_out[,i] <- ifelse(change_analysis_sum_out[,i]==0,"FALSE","TRUE")
+}
+
+datatable(as.data.frame(change_analysis_sum_out),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50)),
+          class="cell-border stripe", caption="LMM Results for Sum of Change in Ranks of predicted Salmon Metabolites with Change in Health Outcomes")
+write.csv(change_analysis_sum_out,
+          paste("./food_table/Sum_of_change_in_Ranks_Metabolites_Health_",file.name,".csv",sep = ""), row.names=F)
+```
+
+#### GGPLOT Method 2
+##### Scatter Plot
+```{r message=FALSE}
+for(j in 1:length(outcomes)){
+ change_analysis_plot <- ggplot(difference_ranked_change_analysis_sum,aes(difference_ranked_change_analysis_sum[,"sum_diff"],
+                                                               difference_ranked_change_analysis_sum[,outcomes[j]]))+
+   geom_point(color="black")+ theme_bw()+
+  labs(x="Sum of Ranks", y=paste(outcomes[j],"Total"),title=paste("Sum of Ranks vs ",outcomes[j], "plot"))+
+   theme(plot.title = element_text(hjust = 0.5))
+ print(change_analysis_plot)
+}
+```
+
+##### Boxplot of "sum_diff" and "Sex"
+```{r}
+change_analysis_boxplot <- ggplot(difference_ranked_change_analysis_sum,aes(Sex,sum_diff,fill=Sex))+
+ theme_bw()+geom_boxplot()+
+ labs(x="Sex", y="Sum of Ranks",title="Sum of Ranks vs Sex")+
+ theme(plot.title = element_text(hjust = 0.5))
+print(change_analysis_boxplot)
+```
+
+#### Association Between Change in Sum of Salmon Metabolite Ranks
+##### Primary Analysis: Without Covariates  
+Sum of Ranks of predicted Salmon Metabolites have FDR Value Below 0.05
+```{r message=FALSE}
+lmod_ranked_2_sum_change_no_cov <- lmer(as.formula(paste("sum_diff~ 1 + (1|StudyID)",sep = "")),
+                                        data = difference_ranked_change_analysis_sum)
+
+change_analysis_sum_change_no_cov <- cbind(data.frame(summary(lmod_ranked_2_sum_change_no_cov)$coefficients),
+                                Singular_Fit = isSingular(lmod_ranked_2_sum_change_no_cov),
+                                target_test= "sum_diff")
+
+colnames(change_analysis_sum_change_no_cov) <-   
+  c("Estimate_Intercept","Std_Error_Intercept","df_Intercept","t_value_Intercept","p_value_Intercept",
+    "Singular_fit_Intercept","Metabolite")
+
+## Calculating FDR and LogP
+change_analysis_sum_change_no_cov$FDR_Intercept <- p.adjust(change_analysis_sum_change_no_cov$p_value_Intercept, method = "BH")
+
+## Creating "test_type", so Results Can be Divided Into "Intercept","Age","Sex", and "Metabolite"
+change_analysis_sum_change_no_cov$test_type <- rownames(change_analysis_sum_change_no_cov)
+change_analysis_sum_change_no_cov[grepl("Intercept",change_analysis_sum_change_no_cov$test_type),"test_type"] <- "Intercept"
+rownames(change_analysis_sum_change_no_cov) <- NULL
+change_analysis_sum_change_no_cov <- change_analysis_sum_change_no_cov[,!grepl("t_value",colnames(change_analysis_sum_change_no_cov))]
+
+## Changing Class to Numeric
+change_analysis_sum_change_no_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                          "p_value_Intercept","FDR_Intercept")] <-
+  lapply(change_analysis_sum_change_no_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                          "p_value_Intercept","FDR_Intercept")], function(x) {as.numeric(x)})
+
+## Showing 4 sum Significant Digits
+change_analysis_sum_change_no_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                          "p_value_Intercept","FDR_Intercept")] <-
+  format(change_analysis_sum_change_no_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                          "p_value_Intercept","FDR_Intercept")],digits=4)
+
+datatable(as.data.frame(change_analysis_sum_change_no_cov),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50)),
+          class="cell-border stripe", caption="LMM for Change in Sum of Ranks in Unique to Salmon Metabolites Without Covariates")
+write.csv(change_analysis_sum_change_no_cov,
+          "./food_table/Sum_of_change_in_Ranks_Metabolites_w_o_cov.csv", row.names=F)
+```
+
+##### Secondary Analysis: With Covariates (Scale "Age", and "Sex")
+Sum of Ranks of predicted Salmon Metabolites have FDR Value Below 0.05
+```{r message=FALSE}
+difference_change_analysis_sum_scale <- difference_ranked_change_analysis_sum
+difference_change_analysis_sum_scale$Sex <- ifelse(difference_change_analysis_sum_scale$Sex=="F",1,0)
+
+lmod_ranked_2_sum_change_cov <- lmer(as.formula(paste("sum_diff~ scale(Age) + scale(Sex) +(1|StudyID)", 
+                                                  sep = "")),data = difference_change_analysis_sum_scale)
+
+change_analysis_sum_change_cov <- cbind(data.frame(summary(lmod_ranked_2_sum_change_cov)$coefficients),
+                             Singular_Fit = isSingular(lmod_ranked_2_sum_change_cov),
+                             target_test= "sum_diff")
+
+colnames(change_analysis_sum_change_cov) <- c("Estimate","Std_Error","df","t_value","p_value","Singular_fit","target_test")
+      
+## Calculating FDR and LogP
+change_analysis_sum_change_cov$FDR <- p.adjust(change_analysis_sum_change_cov$p_value, method = "BH")
+
+## Creating "test_type", so Results Can be Divided Into "Intercept","Age","Sex", and "Metabolite"
+change_analysis_sum_change_cov$test_type <- rownames(change_analysis_sum_change_cov)
+change_analysis_sum_change_cov[grepl("Intercept",change_analysis_sum_change_cov$test_type),"test_type"] <- "Intercept"
+change_analysis_sum_change_cov[grepl("Age",change_analysis_sum_change_cov$test_type),"test_type"] <- "Age"
+change_analysis_sum_change_cov[grepl("Sex",change_analysis_sum_change_cov$test_type),"test_type"] <- "Sex"
+rownames(change_analysis_sum_change_no_cov) <- NULL
+change_analysis_sum_change_cov <- change_analysis_sum_change_cov[,!grepl("t_value",colnames(change_analysis_sum_change_cov))]
+
+## Showing 4 Significant Digits
+change_analysis_sum_change_cov[,c("Estimate","Std_Error","df","p_value","FDR")] <-
+  format(change_analysis_sum_change_cov[,c("Estimate","Std_Error","df","p_value","FDR")],digits=4)
+      
+## Reshaping From Long to Wide
+change_analysis_sum_change_cov <- reshape(change_analysis_sum_change_cov,timevar="test_type",idvar="target_test" ,direction="wide")
+colnames(change_analysis_sum_change_cov) <- gsub("\\.","_",colnames(change_analysis_sum_change_cov))
+
+## Removing Unwanted Columns
+change_analysis_sum_change_cov <- change_analysis_sum_change_cov[,grepl("Estimate|p_value|Intercept|test",colnames(change_analysis_sum_change_cov))]
+
+## Changing Class to Numeric
+change_analysis_sum_change_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                          "p_value_Intercept","FDR_Intercept")] <-
+  lapply(change_analysis_sum_change_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                          "p_value_Intercept","FDR_Intercept")], function(x) {as.numeric(x)})
+
+## Showing 4 sum Significant Digits
+change_analysis_sum_change_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                          "p_value_Intercept","FDR_Intercept")] <-
+  format(change_analysis_sum_change_cov[,c("Estimate_Intercept","Std_Error_Intercept","df_Intercept",
+                          "p_value_Intercept","FDR_Intercept")],digits=4)
+
+datatable(as.data.frame(change_analysis_sum_change_cov),rownames=F,extensions=c("Buttons","ColReorder"),
+          options=list(dom="Bfrtipl",scrollY=TRUE,scrollX=TRUE,colReorder=TRUE,buttons=c("excel","csv"),
+                       pageLength=10,lengthMenu=c(10,25,50)),
+          class="cell-border stripe", caption="LMM for Change in Sum of Ranks in predicted Salmon Metabolite with Covariates")
+write.csv(change_analysis_sum_change_cov,
+          "./food_table/Sum_of_change_in_Ranks_Metabolites_with_cov.csv", row.names=F)
+```

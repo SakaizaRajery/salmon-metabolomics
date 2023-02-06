@@ -1,0 +1,231 @@
+---
+title: "Heatmap unique to salmon"
+author: "Audrey Hendricks"
+date: "4/27/2022"
+
+output: 
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '6'
+    toc_float: true
+    number_sections: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/Users/sakaizarasolofomananarajery/Desktop/Research/Hendriks Folder/Biotransformers/")
+
+library(ggplot2)
+library(qqplotr)
+library(lme4)
+library(lmerTest)
+library(cowplot)
+library(here)
+library(readr)
+library(tidyverse)
+library("pheatmap")
+here()
+```
+
+# lipid
+```{r}
+foodtype <- "salmon"
+datatype <- "lipid_bio"
+file.name <- paste(foodtype, datatype, sep = "_")
+```
+
+
+
+read in lipid data
+```{r}
+diet_lipid<-read_csv(paste("food_table/Change_in_Ranks_Primary_Analysis_",file.name,".csv",sep=""))
+health_change_lipid<-read_csv(paste("food_table/change_in_Health_Metabolites_",file.name,".csv",sep=""))
+
+diet_lipid$est_std_diet<-diet_lipid$Estimate_Intercept/diet_lipid$Std_Error_Intercept
+```
+
+
+reformatting data
+```{r}
+health_change_lipid2<-health_change_lipid[,c("Metabolite", "type", "Estimate_Metabolite", "Std_Error_Metabolite", "p_value_Metabolite", "FDR_Metabolite")]
+health_change_lipid2$est_std<-health_change_lipid2$Estimate_Metabolite/health_change_lipid2$Std_Error_Metabolite
+
+
+health_change_lipid_wide<- pivot_wider(health_change_lipid2, names_from = "type", values_from = c("Estimate_Metabolite", "Std_Error_Metabolite", "p_value_Metabolite", "FDR_Metabolite", "est_std"), names_sep = ".")
+
+
+
+#health_change_lipid_wide<-reshape(health_change_lipid2, idvar="Metabolite", timevar="type", direction="wide")
+
+total_lipid<-merge(diet_lipid[,c("Metabolite", "Estimate_Intercept", "Std_Error_Intercept", "p_value_Intercept", "FDR_Intercept","est_std_diet","Alignment.Value", "Annotations", "Compound.Name", "Formula", "Ionization.mode", "Mass","Retention.Time")], health_change_lipid_wide, by="Metabolite")
+
+total_lipid_sig<-total_lipid[total_lipid$FDR_Intercept<0.05 | total_lipid$FDR_Metabolite.SBP<0.05 | total_lipid$FDR_Metabolite.DBP<0.05 | total_lipid$FDR_Metabolite.Insulin<0.05 | total_lipid$FDR_Metabolite.Chol_T<0.05 | total_lipid$FDR_Metabolite.TG<0.05 | total_lipid$FDR_Metabolite.LDL<0.05 | total_lipid$FDR_Metabolite.HDL<0.05 | total_lipid$FDR_Metabolite.CRP<0.05 | total_lipid$FDR_Metabolite.ApoB<0.05 | total_lipid$FDR_Metabolite.HDL_LDL<0.05 | total_lipid$FDR_Metabolite.Chol_T_HDL <0.05,]
+
+total_lipid_sig_nodiet<-total_lipid[total_lipid$FDR_Metabolite.SBP<0.05 | total_lipid$FDR_Metabolite.DBP<0.05 | total_lipid$FDR_Metabolite.Insulin<0.05 | total_lipid$FDR_Metabolite.Chol_T<0.05 | total_lipid$FDR_Metabolite.TG<0.05 | total_lipid$FDR_Metabolite.LDL<0.05 | total_lipid$FDR_Metabolite.HDL<0.05 | total_lipid$FDR_Metabolite.CRP<0.05 | total_lipid$FDR_Metabolite.ApoB<0.05 | total_lipid$FDR_Metabolite.HDL_LDL<0.05 | total_lipid$FDR_Metabolite.Chol_T_HDL <0.05,]
+
+total_lipid_sig_onlydiet<-total_lipid[total_lipid$FDR_Intercept<0.05,]
+
+diet_sig<-total_lipid[total_lipid$FDR_Intercept<0.05,]
+
+compounds_of_interest <- diet_sig[diet_sig$FDR_Metabolite.SBP<0.05 | diet_sig$FDR_Metabolite.DBP<0.05 | diet_sig$FDR_Metabolite.Insulin<0.05 | diet_sig$FDR_Metabolite.Chol_T<0.05 | diet_sig$FDR_Metabolite.TG<0.05 | diet_sig$FDR_Metabolite.LDL<0.05 | diet_sig$FDR_Metabolite.HDL<0.05 | diet_sig$FDR_Metabolite.CRP<0.05 | diet_sig$FDR_Metabolite.ApoB<0.05 | diet_sig$FDR_Metabolite.HDL_LDL<0.05 | diet_sig$FDR_Metabolite.Chol_T_HDL <0.05,]
+
+#All 74 metabolites
+total_lipid_heatmap<-total_lipid[,c("est_std_diet", "est_std.SBP", "est_std.DBP", "est_std.Insulin", "est_std.Chol_T", "est_std.TG", "est_std.LDL", "est_std.HDL", "est_std.CRP", "est_std.ApoB", "est_std.HDL_LDL", "est_std.Chol_T_HDL")]
+
+#Any of the 55 with at least significant association to one of the health outcome or diet
+total_lipid_sig_heatmap<-total_lipid_sig[,c("est_std_diet", "est_std.SBP", "est_std.DBP", "est_std.Insulin", "est_std.Chol_T", "est_std.TG", "est_std.LDL", "est_std.HDL", "est_std.CRP", "est_std.ApoB", "est_std.HDL_LDL", "est_std.Chol_T_HDL")]
+
+#Only Metabolites (49) with significant change after diet
+total_lipid_sig_diet_heatmap<-total_lipid_sig_onlydiet[,c("est_std_diet", "est_std.SBP", "est_std.DBP", "est_std.Insulin", "est_std.Chol_T", "est_std.TG", "est_std.LDL", "est_std.HDL", "est_std.CRP", "est_std.ApoB", "est_std.HDL_LDL", "est_std.Chol_T_HDL")]
+
+#Any metabolite(16) that have at least one significant association to health outcomes, do not plot diet.
+total_lipid_sig_nodiet_heatmap<-total_lipid_sig_nodiet[,c("est_std.SBP", "est_std.DBP", "est_std.Insulin", "est_std.Chol_T", "est_std.TG", "est_std.LDL", "est_std.HDL", "est_std.CRP", "est_std.ApoB", "est_std.HDL_LDL", "est_std.Chol_T_HDL")]
+
+#Any metabolite (16) that have at least one significant association to health outcomes, plot diet.
+total_lipid_sig_alsodiet_heatmap<-total_lipid_sig_nodiet[,c("est_std_diet", "est_std.SBP", "est_std.DBP", "est_std.Insulin", "est_std.Chol_T", "est_std.TG", "est_std.LDL", "est_std.HDL", "est_std.CRP", "est_std.ApoB", "est_std.HDL_LDL", "est_std.Chol_T_HDL")]
+
+#Metabolites whose change are significant and significantly associated with health outcomes.
+compounds_of_interest_heatmap <- compounds_of_interest[,c("est_std_diet", "est_std.SBP", "est_std.DBP", "est_std.Insulin", "est_std.Chol_T", "est_std.TG", "est_std.LDL", "est_std.HDL", "est_std.CRP", "est_std.ApoB", "est_std.HDL_LDL", "est_std.Chol_T_HDL")]
+
+colnames(total_lipid_sig_alsodiet_heatmap)<-colnames(total_lipid_heatmap)<-colnames(total_lipid_sig_heatmap)<-colnames(total_lipid_sig_diet_heatmap)<-c("Diet", "SBP","DBP", "Insulin", "Chol_T", "TG", "LDL", "HDL", "CRP", "ApoB", "HDL / LDL", "Chol_T / HDL")
+
+colnames(total_lipid_sig_nodiet_heatmap)<-c("SBP","DBP", "Insulin", "Chol_T", "TG", "LDL", "HDL", "CRP", "ApoB", "HDL / LDL", "Chol_T / HDL")
+
+colnames(compounds_of_interest_heatmap)<- c("Diet", "SBP","DBP", "Insulin", "Chol_T", "TG", "LDL", "HDL", "CRP", "ApoB", "HDL / LDL", "Chol_T / HDL")
+
+row.names(compounds_of_interest_heatmap) <- compounds_of_interest$Compound.Name
+row.names(total_lipid_sig_heatmap)<-total_lipid_sig$Compound.Name
+row.names(total_lipid_sig_diet_heatmap)<-total_lipid_sig_onlydiet$Compound.Name
+row.names(total_lipid_sig_nodiet_heatmap)<-row.names(total_lipid_sig_alsodiet_heatmap)<-total_lipid_sig_nodiet$Compound.Name
+row.names(total_lipid_heatmap)<-total_lipid$Compound.Name
+
+```
+
+## heatmap
+
+### Any of the 55 with at least a significant association to one of the health outcome or diet with names
+```{r}
+#set similar scale for all heatmap
+rg <- max(abs(as.matrix(compounds_of_interest_heatmap)))
+
+#Any of the 55 with at least a significant association to one of the health outcome or diet
+sig_heatmap <- pheatmap(as.matrix(total_lipid_sig_heatmap),breaks = seq(-rg, rg, length.out = 100), cutree_rows = 3, cutree_cols  = 2, fontsize_row = 6,fontsize_col = 12, show_rownames=F) 
+ggsave2(filename=paste0("sig_heatmap_", file.name,".jpeg", sep=""), plot=sig_heatmap, device="jpeg",
+          path=paste0("./heatmap"))
+```
+
+### Any of the 55 with at least a significant association to one of the health outcome or diet with names
+```{R}
+#Any of the 55 with at least a significant association to one of the health outcome or diet with names
+sig_heatmap_withnames <- pheatmap(as.matrix(total_lipid_sig_heatmap),breaks = seq(-rg, rg, length.out = 100), cutree_rows = 3, cutree_cols  = 2, fontsize_row = 6,fontsize_col = 12, show_rownames=T) 
+ggsave2(filename=paste0("sig_heatmap_named_", file.name,".jpeg", sep=""), plot=sig_heatmap_withnames, device="jpeg",
+          path=paste0("./heatmap"))
+```
+
+
+### Any metabolite(16) that have at least one significant association to health outcomes, do not plot diet
+```{r}
+#Any metabolite(16) that have at least one significant association to health outcomes, do not plot diet
+sig_nodiet_heatmap<- pheatmap(as.matrix(total_lipid_sig_nodiet_heatmap),breaks = seq(-rg, rg, length.out = 100), cutree_rows = 2, cutree_cols  = 2, fontsize_row = 6,fontsize_col = 12, show_rownames=T)
+ggsave2(filename=paste0("sig_nodiet_heatmap_", file.name,".jpeg", sep=""), plot=sig_nodiet_heatmap, device="jpeg",
+          path=paste0("./heatmap"))
+```
+
+
+### Only Metabolites (49) with significant change after diet
+```{R}
+#Only Metabolites (49) with significant change after diet
+# pheatmap(as.matrix(total_lipid_sig_diet_heatmap), cutree_rows = 2, cutree_cols  = 3, fontsize = 12, show_rownames=F) 
+sig_diet_heatmap<- pheatmap(as.matrix(total_lipid_sig_diet_heatmap), breaks = seq(-rg, rg, length.out = 100), cutree_rows = 2, cutree_cols  = 3, fontsize = 12, show_rownames=F) 
+```
+
+### Only Metabolites (49) with significant change after diet with names
+```{r}
+#Only Metabolites (49) with significant change after diet with names
+sig_diet_heatmap_withnames<- pheatmap(as.matrix(total_lipid_sig_diet_heatmap), breaks = seq(-rg, rg, length.out = 100), cutree_rows = 2, cutree_cols  = 3, fontsize = 6, show_rownames=T) 
+ggsave2(filename=paste0("sig_diet_heatmap_", file.name,".jpeg", sep=""), plot=sig_diet_heatmap, device="jpeg",
+          path=paste0("./heatmap"))
+
+ggsave2(filename=paste0("sig_diet_heatmap_named_", file.name,".jpeg", sep=""), plot=sig_diet_heatmap_withnames, device="jpeg",
+          path=paste0("./heatmap"))
+```
+
+
+### Any metabolite (16) that have at least one significant association to health outcomes, plot diet 
+```{r}
+#Any metabolite (16) that have at least one significant association to health outcomes, plot diet
+sig_alsodiet_heatmap<- pheatmap(as.matrix(total_lipid_sig_alsodiet_heatmap),breaks = seq(-rg, rg, length.out = 100), cutree_rows = 2, cutree_cols  = 3, fontsize_row = 6,fontsize_col = 12, show_rownames=T)
+ggsave2(filename=paste0("sig_alsodiet_heatmap_", file.name,".jpeg", sep=""), plot=sig_alsodiet_heatmap, device="jpeg",
+          path=paste0("./heatmap"))
+
+```
+
+
+### Metabolites whose change are significant and significantly associated with health outcomes. 
+```{R}
+#Metabolites whose change are significant and significantly associated with health outcomes.
+cmpd_intrst_heatmap<- pheatmap(as.matrix(compounds_of_interest_heatmap),breaks = seq(-rg, rg, length.out = 100), cutree_rows = 2, cutree_cols  = 3, fontsize_row = 6,fontsize_col = 12, show_rownames=T)
+ggsave2(filename=paste0("cmpd_intrst_heatmap_", file.name,".jpeg", sep=""), plot=cmpd_intrst_heatmap, device="jpeg",
+          path=paste0("./heatmap"))
+```
+
+# Aqueous
+```{r}
+foodtype <- "salmon"
+datatype <- "aqueous_bio"
+file.name <- paste(foodtype, datatype, sep = "_")
+```
+
+read in aqueous data
+```{r}
+diet_aq<-read_csv(paste("food_table/Change_in_Ranks_Primary_Analysis_",file.name,".csv",sep=""))
+health_change_aq<-read_csv(paste("food_table/change_in_Health_Metabolites_",file.name,".csv",sep=""))
+
+diet_aq$est_std_diet<-diet_aq$Estimate_Intercept/diet_aq$Std_Error_Intercept
+```
+
+reformatting data
+```{r}
+health_change_aq2<-health_change_aq[,c("Metabolite", "type", "Estimate_Metabolite", "Std_Error_Metabolite", "p_value_Metabolite", "FDR_Metabolite")]
+health_change_aq2$est_std<-health_change_aq2$Estimate_Metabolite/health_change_aq2$Std_Error_Metabolite
+
+
+health_change_aq_wide<- pivot_wider(health_change_aq2, names_from = "type", values_from = c("Estimate_Metabolite", "Std_Error_Metabolite", "p_value_Metabolite", "FDR_Metabolite", "est_std"), names_sep = ".")
+
+total_aq<-merge(diet_aq[,c("Metabolite", "Estimate_Intercept", "Std_Error_Intercept", "p_value_Intercept", "FDR_Intercept","est_std_diet","Alignment.Value", "Annotations", "Compound.Name", "Formula", "Ion.Species", "Mass",                 "Retention.Time")], health_change_aq_wide, by="Metabolite")
+
+total_aq_sig<-total_aq[total_aq$FDR_Intercept<0.05 | total_aq$FDR_Metabolite.SBP<0.05 | total_aq$FDR_Metabolite.DBP<0.05 | total_aq$FDR_Metabolite.Insulin<0.05 | total_aq$FDR_Metabolite.Chol_T<0.05 | total_aq$FDR_Metabolite.TG<0.05 | total_aq$FDR_Metabolite.LDL<0.05 | total_aq$FDR_Metabolite.HDL<0.05 | total_aq$FDR_Metabolite.CRP<0.05 | total_aq$FDR_Metabolite.ApoB<0.05 | total_aq$FDR_Metabolite.HDL_LDL<0.05 | total_aq$FDR_Metabolite.Chol_T_HDL <0.05,]
+
+total_aq_sig_nodiet<-total_aq[total_aq$FDR_Metabolite.SBP<0.05 | total_aq$FDR_Metabolite.DBP<0.05 | total_aq$FDR_Metabolite.Insulin<0.05 | total_aq$FDR_Metabolite.Chol_T<0.05 | total_aq$FDR_Metabolite.TG<0.05 | total_aq$FDR_Metabolite.LDL<0.05 | total_aq$FDR_Metabolite.HDL<0.05 | total_aq$FDR_Metabolite.CRP<0.05 | total_aq$FDR_Metabolite.ApoB<0.05 | total_aq$FDR_Metabolite.HDL_LDL<0.05 | total_aq$FDR_Metabolite.Chol_T_HDL <0.05,]
+
+total_aq_sig_onlydiet<-total_aq[total_aq$FDR_Intercept<0.05,]
+
+total_aq_heatmap<-total_aq[,c("est_std_diet", "est_std.SBP", "est_std.DBP", "est_std.Insulin", "est_std.Chol_T", "est_std.TG", "est_std.LDL", "est_std.HDL", "est_std.CRP", "est_std.ApoB", "est_std.HDL_LDL", "est_std.Chol_T_HDL")]
+total_aq_sig_heatmap<-total_aq_sig[,c("est_std_diet", "est_std.SBP", "est_std.DBP", "est_std.Insulin", "est_std.Chol_T", "est_std.TG", "est_std.LDL", "est_std.HDL", "est_std.CRP", "est_std.ApoB", "est_std.HDL_LDL", "est_std.Chol_T_HDL")]
+total_aq_sig_diet_heatmap<-total_aq_sig_onlydiet[,c("est_std_diet", "est_std.SBP", "est_std.DBP", "est_std.Insulin", "est_std.Chol_T", "est_std.TG", "est_std.LDL", "est_std.HDL", "est_std.CRP", "est_std.ApoB", "est_std.HDL_LDL", "est_std.Chol_T_HDL")]
+total_aq_sig_nodiet_heatmap<-total_aq_sig_nodiet[,c("est_std.SBP", "est_std.DBP", "est_std.Insulin", "est_std.Chol_T", "est_std.TG", "est_std.LDL", "est_std.HDL", "est_std.CRP", "est_std.ApoB", "est_std.HDL_LDL", "est_std.Chol_T_HDL")]
+total_aq_sig_alsodiet_heatmap<-total_aq_sig_nodiet[,c("est_std_diet", "est_std.SBP", "est_std.DBP", "est_std.Insulin", "est_std.Chol_T", "est_std.TG", "est_std.LDL", "est_std.HDL", "est_std.CRP", "est_std.ApoB", "est_std.HDL_LDL", "est_std.Chol_T_HDL")]
+
+colnames(total_aq_sig_alsodiet_heatmap)<-colnames(total_aq_heatmap)<-colnames(total_aq_sig_heatmap)<-colnames(total_aq_sig_diet_heatmap)<-c("Diet", "SBP","DBP", "Insulin", "Chol_T", "TG", "LDL", "HDL", "CRP", "ApoB", "HDL / LDL", "Chol_T / HDL")
+
+colnames(total_aq_sig_nodiet_heatmap)<-c("SBP","DBP", "Insulin", "Chol_T", "TG", "LDL", "HDL", "CRP", "ApoB", "HDL / LDL", "Chol_T / HDL")
+
+row.names(total_aq_sig_heatmap)<-total_aq_sig$Compound.Name
+row.names(total_aq_sig_diet_heatmap)<-total_aq_sig_onlydiet$Compound.Name
+row.names(total_aq_sig_nodiet_heatmap)<-row.names(total_aq_sig_alsodiet_heatmap)<-total_aq_sig_nodiet$Compound.Name
+row.names(total_aq_heatmap)<-total_aq$Compound.Name
+```
+
+## heatmap
+
+### 11 metabolites with significant change over diet intervention
+```{r}
+#rg <- max(abs(as.matrix(total_aq_sig_heatmap)))
+
+# 11 metabolites with significant change over diet intervention
+sig_heatmap <- pheatmap(as.matrix(total_aq_sig_heatmap),breaks = seq(-rg, rg, length.out = 100), cutree_rows = 3, cutree_cols  = 2, fontsize_row = 6,fontsize_col = 12, show_rownames=T) 
+ggsave2(filename=paste0("sig_heatmap_", file.name,".jpeg", sep=""), plot=sig_heatmap, device="jpeg",
+          path=paste0("./heatmap"))
+```
+
