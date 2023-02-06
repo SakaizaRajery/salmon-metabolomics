@@ -1,0 +1,195 @@
+---
+title: "Supplementary Files"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '3'
+    toc_float: true
+    code_folding: hide
+---
+
+```{=html}
+<style>
+div.blue { background-color:#e6f0ff; border-radius: 5px; padding: 10px;}
+</style>
+```
+::: {.blue}
+-   Goal:
+
+    -   setting up common names across all files
+:::
+
+# Data Prep
+
+## Libraries
+
+```{r}
+## Install the following packages 
+library(stringr)
+library(data.table)
+library(readxl)
+```
+
+## Insert Interested Outcomes
+
+```{r}
+outcomes <- c("SBP_total","DBP_total","Insulin","Chol_T","TG","LDL","HDL","CRP","ApoB")
+```
+
+## Reading in Data
+Read in Targeted File as "food"
+```{r}
+# Metabolite Identifiers (Mass, Retention, Compound)
+food <- as.data.frame(fread("./AQ pos unique to Salmon 100% of files - found in plasma_QUANT.txt",sep = "\t", header = T))
+food <- as.data.frame(t(food))
+food <- cbind(rownames(food),food)
+colnames(food) <- food["Compound",]
+food <- food[-1,]
+rownames(food) <- NULL
+colnames(food)[1] <- "Key"
+
+metabolites <- colnames(food)[2:length(food)] # identify metabolite names
+
+# Create a new dataframe with information about metabolites
+met_info <- t(food[!grepl("raw", food$Key),])
+rownames(met_info) <- NULL
+colnames(met_info) <- met_info[1,]
+met_info <- met_info[-1,]
+met_info <- as.data.frame(met_info[,c("Compound Name","CASNumber","Number Passed","Retention Time","Measured Retention Time",
+                                      "Product Mass","Mass Column")])
+```
+
+Removing Unwanted Rows(Rows Not Containing "raw" in Their Names)
+```{r}
+food <- food[grepl("raw", food$Key),]
+```
+
+## Read Supplementary Files
+reading in "info_file", "batch_file", "complete_health_outcome". Info File Contains Following Info: "Period", "Trial", "Time", "Age", and "Sex"
+```{r}
+Info_file <- read.csv("./S44data_MASTER_41 subjects.csv",as.is = T)
+Info_file <- Info_file[,c("StudyID", "Period", "Trial", "Time","Age", "Sex", "Diet")] 
+Info_file <- Info_file[complete.cases(Info_file),] # Removing rows with incomplete data
+```
+
+### Batch File
+Contains Following Info: "batch", "order"
+```{r}
+batch_file <- read_excel("./Med_Diet_AQ_Sample_Key.xlsx")
+colnames(batch_file) <- c("Key", "order", "batch", "StudyID")  
+batch_file <- batch_file[complete.cases(batch_file),]
+```
+
+### Health Outcome
+```{r}
+complete_health_outcome <- read.csv("./S44data_MASTER_41 subjects.csv")
+```
+
+#### Only Reading "outcomes" of Health File
+```{r}
+complete_health_outcome <- complete_health_outcome[,c("StudyID", "Period", "Trial", outcomes)]
+
+## replacing "." with NA
+complete_health_outcome[complete_health_outcome=="."] <- NA
+```
+
+## Setting Up a Common ID
+Each File has different id names and a common is needed
+```{r}
+Info_file[1:5,"StudyID"]
+batch_file[1:5,"StudyID"]
+```
+
+### Info_file
+```{r}
+Info_file$StudyID <- gsub("S44-","", Info_file$StudyID, fixed = TRUE)
+Info_file$StudyID <- paste(Info_file$StudyID, Info_file$Time, Info_file$Trial, sep = " ")
+Info_file$StudyID <- gsub("p","P",Info_file$StudyID)
+```
+
+### Batch_file
+```{r}
+batch_file$StudyID <- gsub("S44-","",batch_file$StudyID)
+batch_file$StudyID <- gsub("-"," ",batch_file$StudyID)
+batch_file$StudyID <- gsub("Instrument_","",batch_file$StudyID)
+batch_file$Key <- gsub("Instrument_","",batch_file$Key)
+```
+
+### food
+```{r}
+food <- food[!grepl("Blank",food$Key),]
+food$day_numb <- ifelse(str_detect(food$Key,"Instrument"), str_extract(food$Key,"[0-9]+"),NA)
+
+food$Key <- gsub(".*Batch", "Batch", food$Key)
+food$Key <- gsub("_Instrument", "", food$Key)
+food[!grepl("Batch",food$Key),"Key"] <- str_extract(food[!grepl("Batch",food$Key),"Key"],"[0-9]+")
+
+food$Key <- gsub("\\(.*", "", food$Key)
+food$Key
+```
+
+Checking Results
+```{r}
+Info_file$StudyID[1:5]
+batch_file$StudyID[1:5]
+```
+
+### Merging "food","Info_file","batch_file"
+```{r}
+new_merged <- merge(batch_file,Info_file, by="StudyID",all=T)
+new_merged <- merge(new_merged,food, by="Key",all=T)
+
+new_merged <- new_merged[complete.cases(new_merged[,metabolites]),] # Removing rows with incomplete data
+new_merged <- subset(new_merged,select=-c(Key,day_numb))
+```
+
+### Adding two Health Outcomes of "HDL/LDL", and "Chol_T/HDL"
+```{r}
+complete_health_outcome$HDL_LDL <- complete_health_outcome$HDL/complete_health_outcome$LDL
+
+complete_health_outcome$Chol_T_HDL <- complete_health_outcome$Chol_T/complete_health_outcome$HDL
+```
+
+### Creating "health_outcome", which is the Difference in Outcomes within Each Trial
+```{r}
+outcomes <- c("SBP_total","DBP_total","Insulin","Chol_T","TG","LDL","HDL","CRP","ApoB","HDL_LDL","Chol_T_HDL")
+
+complete_health_outcome[,outcomes] <- apply(complete_health_outcome[,outcomes],2,function(x) as.numeric(as.character(x)))
+
+complete_health_outcome$StudyID <- gsub(".*-","",complete_health_outcome$StudyID)
+
+names_health <- as.character(unique(complete_health_outcome$StudyID))
+tmp.health <- diff_health <- tmp.health.dat <- c()
+
+for(j in names_health){
+  tmp.health <- complete_health_outcome[complete_health_outcome$StudyID==j,]
+  
+  for(k in 1:2){
+    if(sum(tmp.health$Trial == k) == 2){
+      tmp.health.dat <- tmp.health[tmp.health$Trial == k,] 
+      
+      tmp.health.dat <- (tmp.health.dat[grepl(max(tmp.health.dat$Period),tmp.health.dat$Period),outcomes])-
+        (tmp.health.dat[grepl(min(tmp.health.dat$Period),tmp.health.dat$Period),outcomes])
+
+      tmp.health.dat <- cbind(StudyID=j, Trial=k, tmp.health.dat)
+      
+      diff_health <- rbind(diff_health, tmp.health.dat)
+    }
+  }
+}
+```
+
+# Writting Out Results
+```{r}
+write.table(new_merged,
+            file="./merged_file.txt",row.names=T)
+write.table(diff_health,
+            file="./health_outcome.txt",row.names=T)
+write.table(complete_health_outcome,
+            file="./complete_health_outcome.txt",
+            row.names = T)
+write.table(met_info,
+            file="./met_info.txt",
+            row.names = T)
+```
