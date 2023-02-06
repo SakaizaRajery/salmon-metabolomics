@@ -1,0 +1,97 @@
+---
+title: "Heatmap unique to salmon"
+author: "Audrey Hendricks"
+date: "4/27/2022"
+output: 
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '6'
+    toc_float: true
+    number_sections: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(qqplotr)
+library(lme4)
+library(lmerTest)
+library(cowplot)
+library(here)
+here()
+```
+
+# aq
+read in data
+```{r}
+diet_aq<-read.csv("aq_Change_diet_Ranks_Primary_Analysis.csv")
+health_change_aq<-read.csv("aq_Change_in_Health_Metabolites.csv")
+
+diet_aq$est_std_diet<-diet_aq$Estimate_Intercept/diet_aq$Std_Error_Intercept
+```
+
+
+reformatting data
+```{r}
+health_change_aq2<-health_change_aq[,c("Metabolite", "type", "Estimate_Metabolite", "Std_Error_Metabolite", "p_value_Metabolite", "FDR_Metabolite")]
+health_change_aq2$est_std<-health_change_aq2$Estimate_Metabolite/health_change_aq2$Std_Error_Metabolite
+
+
+health_change_aq_wide<-reshape(health_change_aq2, idvar="Metabolite", timevar="type", direction="wide")
+
+#All 35 Aqueous metabolites
+total_aq<-merge(diet_aq[,c("Metabolite","Estimate_Intercept","Std_Error_Intercept","p_value_Intercept","FDR_Intercept","Compound.Name","CASNumber","Number.Passed","Retention.Time","Measured.Retention.Time","Product.Mass","Mass.Column","est_std_diet")], health_change_aq_wide, by="Metabolite")
+
+# All (11) Metabolites with either significant change after diet intervention or significant health associations at FDR < 0.05
+total_aq_sig<-total_aq[total_aq$FDR_Intercept<0.05 | total_aq$FDR_Metabolite.SBP<0.05 | total_aq$FDR_Metabolite.DBP<0.05 | total_aq$FDR_Metabolite.Insulin<0.05 | total_aq$FDR_Metabolite.Chol_T<0.05 | total_aq$FDR_Metabolite.TG<0.05 | total_aq$FDR_Metabolite.LDL<0.05 | total_aq$FDR_Metabolite.HDL<0.05 | total_aq$FDR_Metabolite.CRP<0.05 | total_aq$FDR_Metabolite.ApoB<0.05 | total_aq$FDR_Metabolite.HDL_LDL<0.05 | total_aq$FDR_Metabolite.Chol_T_HDL <0.05,]
+
+#No metabolites with only significant associations to health outcomes at FDR < 0.05
+total_aq_sig_nodiet<-total_aq[total_aq$FDR_Metabolite.SBP<0.05 | total_aq$FDR_Metabolite.DBP<0.05 | total_aq$FDR_Metabolite.Insulin<0.05 | total_aq$FDR_Metabolite.Chol_T<0.05 | total_aq$FDR_Metabolite.TG<0.05 | total_aq$FDR_Metabolite.LDL<0.05 | total_aq$FDR_Metabolite.HDL<0.05 | total_aq$FDR_Metabolite.CRP<0.05 | total_aq$FDR_Metabolite.ApoB<0.05 | total_aq$FDR_Metabolite.HDL_LDL<0.05 | total_aq$FDR_Metabolite.Chol_T_HDL <0.05,]
+
+#All metabolites (11) with only significant change after diet intervention 
+total_aq_sig_onlydiet<-total_aq[total_aq$FDR_Intercept<0.05,]
+
+# All 35 aqueous metabolites
+total_aq_heatmap<-total_aq[,c("est_std_diet","est_std.SBP","est_std.DBP","est_std.Insulin","est_std.Chol_T","est_std.TG","est_std.LDL","est_std.HDL","est_std.CRP","est_std.ApoB","est_std.HDL_LDL","est_std.Chol_T_HDL")]
+
+## All (11) Metabolites with either significant change after diet intervention or significant health associations at FDR < 0.05
+total_aq_sig_heatmap<-total_aq_sig[,c("est_std_diet","est_std.SBP","est_std.DBP","est_std.Insulin","est_std.Chol_T","est_std.TG","est_std.LDL","est_std.HDL","est_std.CRP","est_std.ApoB","est_std.HDL_LDL","est_std.Chol_T_HDL")]
+
+#All metabolites (11) with only significant change after diet intervention 
+total_aq_sig_diet_heatmap<-total_aq_sig_onlydiet[,c("est_std_diet","est_std.SBP","est_std.DBP","est_std.Insulin","est_std.Chol_T","est_std.TG","est_std.LDL","est_std.HDL","est_std.CRP","est_std.ApoB","est_std.HDL_LDL","est_std.Chol_T_HDL")]
+
+#No metabolites with only significant associations to health outcomes at FDR < 0.05
+total_aq_sig_nodiet_heatmap<-total_aq_sig_nodiet[,c("est_std.SBP","est_std.DBP","est_std.Insulin","est_std.Chol_T","est_std.TG","est_std.LDL","est_std.HDL","est_std.CRP","est_std.ApoB","est_std.HDL_LDL","est_std.Chol_T_HDL")]
+
+#No metabolites with only significant associations to health outcomes at FDR < 0.05
+total_aq_sig_alsodiet_heatmap<-total_aq_sig_nodiet[,c("est_std_diet","est_std.SBP","est_std.DBP","est_std.Insulin","est_std.Chol_T","est_std.TG","est_std.LDL","est_std.HDL","est_std.CRP","est_std.ApoB","est_std.HDL_LDL","est_std.Chol_T_HDL")]
+
+colnames(total_aq_sig_alsodiet_heatmap)<-colnames(total_aq_heatmap)<-colnames(total_aq_sig_heatmap)<-colnames(total_aq_sig_diet_heatmap)<-c("Diet", "SBP","DBP", "Insulin", "Chol_T", "TG", "LDL", "HDL", "CRP", "ApoB", "HDL / LDL", "Chol_T / HDL")
+
+colnames(total_aq_sig_nodiet_heatmap)<-c("SBP","DBP", "Insulin", "Chol_T", "TG", "LDL", "HDL", "CRP", "ApoB", "HDL / LDL", "Chol_T / HDL")
+
+row.names(total_aq_sig_heatmap)<-total_aq_sig$Compound.Name
+row.names(total_aq_sig_diet_heatmap)<-total_aq_sig_onlydiet$Compound.Name
+row.names(total_aq_sig_nodiet_heatmap)<-row.names(total_aq_sig_alsodiet_heatmap)<-total_aq_sig_nodiet$Compound.Name
+row.names(total_aq_heatmap)<-total_aq$Compound.Name
+```
+
+## heatmap
+```{r}
+library("pheatmap")
+rg <-5
+```
+
+### All (11) Metabolites with either significant change after diet intervention or significant health associations at FDR < 0.05
+```{R}
+pheatmap(as.matrix(total_aq_sig_heatmap),breaks = seq(-rg, rg, length.out = 100), cutree_rows = 2, cutree_cols  = 2, fontsize_row = 6,fontsize_col = 12, show_rownames=F) 
+``` 
+
+### All metabolites (11) with only significant change after diet intervention 
+```{r}
+pheatmap(as.matrix(total_aq_sig_diet_heatmap),breaks = seq(-rg, rg, length.out = 100), cutree_rows = 2, cutree_cols  = 3, fontsize = 12, show_rownames=F) 
+
+```
+

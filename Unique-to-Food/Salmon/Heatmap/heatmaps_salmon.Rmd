@@ -1,0 +1,115 @@
+---
+title: "Heatmap unique to salmon"
+author: "Audrey Hendricks"
+date: "4/27/2022"
+
+output: 
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '6'
+    toc_float: true
+    number_sections: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(qqplotr)
+library(lme4)
+library(lmerTest)
+library(cowplot)
+library(here)
+here()
+```
+
+# lipid
+read in data
+```{r}
+# Importing data set
+diet_lipid<-read.csv("Lipid_Change_diet_Ranks_Primary_Analysis.csv")
+health_change_lipid<-read.csv("Lipid_Change_in_Health_Metabolites.csv")
+
+#creating intercept variable to use for heatmap 
+diet_lipid$est_std_diet<-diet_lipid$Estimate_Intercept/diet_lipid$Std_Error_Intercept
+```
+
+
+reformatting data
+```{r}
+#Selecting column needed
+health_change_lipid2<-health_change_lipid[,c("Metabolite", "type", "Estimate_Metabolite", "Std_Error_Metabolite", "p_value_Metabolite", "FDR_Metabolite")]
+
+#Creating Metabolite variable to use for heatmap
+health_change_lipid2$est_std<-health_change_lipid2$Estimate_Metabolite/health_change_lipid2$Std_Error_Metabolite
+
+
+health_change_lipid_wide<-reshape(health_change_lipid2, idvar="Metabolite", timevar="type", direction="wide")
+
+#Merging diet and health change data together
+total_lipid<-merge(diet_lipid[,c("Metabolite","Estimate_Intercept","Std_Error_Intercept","p_value_Intercept","FDR_Intercept","Compound.Name","CASNumber","Number.Passed","Retention.Time","Measured.Retention.Time","Product.Mass","QualifierMass","est_std_diet")], health_change_lipid_wide, by="Metabolite")
+
+#All (59) metabolites with either significant change after diet intervention or significant association to any health outcome  at FDR < 0.05
+total_lipid_sig<-total_lipid[total_lipid$FDR_Intercept<0.05 | total_lipid$FDR_Metabolite.SBP<0.05 | total_lipid$FDR_Metabolite.DBP<0.05 | total_lipid$FDR_Metabolite.Insulin<0.05 | total_lipid$FDR_Metabolite.Chol_T<0.05 | total_lipid$FDR_Metabolite.TG<0.05 | total_lipid$FDR_Metabolite.LDL<0.05 | total_lipid$FDR_Metabolite.HDL<0.05 | total_lipid$FDR_Metabolite.CRP<0.05 | total_lipid$FDR_Metabolite.ApoB<0.05 | total_lipid$FDR_Metabolite.HDL_LDL<0.05 | total_lipid$FDR_Metabolite.Chol_T_HDL <0.05,]
+
+# All metabolites (9) with significant association to a health outcome at FDR < 0.05
+total_lipid_sig_nodiet<-total_lipid[total_lipid$FDR_Metabolite.SBP<0.05 | total_lipid$FDR_Metabolite.DBP<0.05 | total_lipid$FDR_Metabolite.Insulin<0.05 | total_lipid$FDR_Metabolite.Chol_T<0.05 | total_lipid$FDR_Metabolite.TG<0.05 | total_lipid$FDR_Metabolite.LDL<0.05 | total_lipid$FDR_Metabolite.HDL<0.05 | total_lipid$FDR_Metabolite.CRP<0.05 | total_lipid$FDR_Metabolite.ApoB<0.05 | total_lipid$FDR_Metabolite.HDL_LDL<0.05 | total_lipid$FDR_Metabolite.Chol_T_HDL <0.05,]
+
+#all (55) metabolites that significantly change after diet intervention at FDR<0.05
+total_lipid_sig_onlydiet<-total_lipid[total_lipid$FDR_Intercept<0.05,]
+
+#All 104 lipid plotted with diet and health association
+total_lipid_heatmap<-total_lipid[,c("est_std_diet","est_std.SBP","est_std.DBP","est_std.Insulin","est_std.Chol_T","est_std.TG","est_std.LDL","est_std.HDL","est_std.CRP","est_std.ApoB","est_std.HDL_LDL","est_std.Chol_T_HDL")]
+
+#All (59) metabolites with either significant change after diet intervention or significant association to any health outcome  at FDR < 0.05
+total_lipid_sig_heatmap<-total_lipid_sig[,c("est_std_diet","est_std.SBP","est_std.DBP","est_std.Insulin","est_std.Chol_T","est_std.TG","est_std.LDL","est_std.HDL","est_std.CRP","est_std.ApoB","est_std.HDL_LDL","est_std.Chol_T_HDL")]
+
+#all (55) metabolites that significantly change after diet intervention at FDR<0.05
+total_lipid_sig_diet_heatmap<-total_lipid_sig_onlydiet[,c("est_std_diet", "est_std.SBP", "est_std.DBP", "est_std.Insulin", "est_std.Chol_T", "est_std.TG", "est_std.LDL", "est_std.HDL", "est_std.CRP", "est_std.ApoB", "est_std.HDL_LDL", "est_std.Chol_T_HDL")]
+
+# All metabolites (9) with significant association to a health outcome at FDR < 0.05, do not plot Diet
+total_lipid_sig_nodiet_heatmap<-total_lipid_sig_nodiet[,c("est_std.SBP","est_std.DBP","est_std.Insulin","est_std.Chol_T","est_std.TG","est_std.LDL","est_std.HDL","est_std.CRP","est_std.ApoB","est_std.HDL_LDL","est_std.Chol_T_HDL")]
+
+# All metabolites (9) with significant association to a health outcome at FDR < 0.05, plot diet
+total_lipid_sig_alsodiet_heatmap<-total_lipid_sig_nodiet[,c("est_std_diet","est_std.SBP","est_std.DBP","est_std.Insulin","est_std.Chol_T","est_std.TG","est_std.LDL","est_std.HDL","est_std.CRP","est_std.ApoB","est_std.HDL_LDL","est_std.Chol_T_HDL")]
+
+colnames(total_lipid_sig_alsodiet_heatmap)<-colnames(total_lipid_heatmap)<-colnames(total_lipid_sig_heatmap)<-colnames(total_lipid_sig_diet_heatmap)<-c("Diet", "SBP","DBP", "Insulin", "Chol_T", "TG", "LDL", "HDL", "CRP", "ApoB", "HDL / LDL", "Chol_T / HDL")
+
+colnames(total_lipid_sig_nodiet_heatmap)<-c("SBP","DBP", "Insulin", "Chol_T", "TG", "LDL", "HDL", "CRP", "ApoB", "HDL / LDL", "Chol_T / HDL")
+
+row.names(total_lipid_sig_heatmap)<-total_lipid_sig$Compound.Name
+row.names(total_lipid_sig_diet_heatmap)<-total_lipid_sig_onlydiet$Compound.Name
+row.names(total_lipid_sig_nodiet_heatmap)<-row.names(total_lipid_sig_alsodiet_heatmap)<-total_lipid_sig_nodiet$Compound.Name
+row.names(total_lipid_heatmap)<-total_lipid$Compound.Name
+```
+
+## heatmap
+PGP(18:0/22:4(72.102.132.162)) is unique M.103
+```{r}
+library("pheatmap")
+#setting similar scale for all heatmaps
+rg <- 5
+```
+
+
+### All (59) metabolites with either significant change after diet intervention or significant association to any health outcome  at FDR < 0.05
+```{R}
+pheatmap(as.matrix(total_lipid_sig_heatmap),breaks = seq(-rg, rg, length.out = 100), cutree_rows = 3, cutree_cols  = 2, fontsize_row = 6,fontsize_col = 12, show_rownames=F) 
+```
+
+### All metabolites (9) with significant association to a health outcome at FDR < 0.05, do not plot Diet
+```{r}
+pheatmap(as.matrix(total_lipid_sig_nodiet_heatmap),breaks = seq(-rg, rg, length.out = 100), cutree_rows = 2, cutree_cols  = 2, fontsize_row = 6,fontsize_col = 12, show_rownames=T) 
+```
+
+### All (55) metabolites that significantly change after diet intervention at FDR<0.05
+```{r}
+pheatmap(as.matrix(total_lipid_sig_diet_heatmap),breaks = seq(-rg, rg, length.out = 100), cutree_rows = 2, cutree_cols  = 3, fontsize = 12, show_rownames=F) 
+```
+
+### All metabolites (9) with significant association to a health outcome at FDR < 0.05, plot Diet
+```{R}
+pheatmap(as.matrix(total_lipid_sig_alsodiet_heatmap),breaks = seq(-rg, rg, length.out = 100), cutree_rows = 2, cutree_cols  = 3, fontsize_row = 6,fontsize_col = 12, show_rownames=T) 
+```
+
