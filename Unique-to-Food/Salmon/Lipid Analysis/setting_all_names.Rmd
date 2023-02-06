@@ -1,0 +1,202 @@
+---
+title: "Supplementary Files"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '3'
+    toc_float: true
+    code_folding: hide
+---
+
+```{=html}
+<style>
+div.blue { background-color:#e6f0ff; border-radius: 5px; padding: 10px;}
+</style>
+```
+::: {.blue}
+-   Goal:
+
+    -   setting up common names across all files
+:::
+
+# Data Prep
+
+## Libraries
+
+```{r}
+## Install the following packages 
+library(stringr)
+library(data.table)
+```
+
+## Insert Interested Outcomes
+
+```{r}
+outcomes <- c("SBP_total","DBP_total","Insulin","Chol_T","TG","LDL","HDL","CRP","ApoB")
+```
+
+## Reading in Data
+Read in Targeted File as "food"
+```{r}
+# Metabolite Identifiers (Mass, Retention, Compound)
+food <- as.data.frame(fread("./Lipid pos unique to Salmon 100% of files - found in plasma_QUANT.txt",sep = "\t", header = T))
+food <- as.data.frame(t(food))
+food <- cbind(rownames(food),food)
+colnames(food) <- food["Compound",]
+food <- food[-1,]
+rownames(food) <- NULL
+colnames(food)[1] <- "StudyID"
+
+metabolites <- colnames(food)[2:length(food)] # identify metabolite names
+
+# Create a new dataframe with information about metabolites
+met_info <- t(food[!grepl("raw", food$StudyID),])
+rownames(met_info) <- NULL
+colnames(met_info) <- met_info[1,]
+met_info <- met_info[-1,]
+met_info <- as.data.frame(met_info[,c("Compound Name","CASNumber", "Number Passed", "Retention Time", "Measured Retention Time",
+                                      "Product Mass","QualifierMass")])
+```
+
+Removing Unwanted Rows(Rows Not Containing "raw" in Their Names)
+```{r}
+food <- food[grepl("raw", food$StudyID),]
+```
+
+## Read Supplementary Files
+reading in "info_file", "batch_file", "complete_health_outcome". Info File Contains Following Info: "Period", "Trial", "Time", "Age", and "Sex"
+```{r}
+Info_file <- read.csv("./S44data_MASTER_41 subjects.csv",as.is = T)
+Info_file <- Info_file[,c("StudyID", "Period", "Trial", "Time","Age", "Sex", "Diet")] 
+Info_file <- Info_file[complete.cases(Info_file),] # Removing rows with incomplete data
+```
+
+### Batch File
+Contains Following Info: "batch", "order"
+```{r}
+batch_file <- read.csv("./compound_values_raw_height.csv",as.is = T) 
+batch_file <- batch_file[, c("id.basic", "batch", "order")]  
+batch_file <- batch_file[complete.cases(batch_file),]
+```
+
+### Health Outcome
+```{r}
+complete_health_outcome <- read.csv("./S44data_MASTER_41 subjects.csv")
+```
+
+#### Only Reading "outcomes" of Health File
+```{r}
+complete_health_outcome <- complete_health_outcome[,c("StudyID", "Period", "Trial", outcomes)]
+
+## replacing "." with NA
+complete_health_outcome[complete_health_outcome=="."] <- NA
+```
+
+## Setting Up a Common ID
+Each File has different names and a common names is needed
+```{r}
+Info_file[1:5,1]
+batch_file[1:5,1]
+food[30:35,1]
+```
+
+### Info_file
+```{r}
+Info_file$StudyID <- gsub("S44-","", Info_file$StudyID, fixed = TRUE)
+Info_file$StudyID <- paste(Info_file$StudyID, Info_file$Time, Info_file$Trial, sep = " ")
+Info_file$StudyID <- gsub("p","P",Info_file$StudyID)
+```
+
+### Batch_file
+```{r}
+batch_file$id.basic <- gsub("Day.[0-9]_","",batch_file$id.basic)
+batch_file$id.basic <- gsub("_area2height.raw.","",batch_file$id.basic)
+batch_file$id.basic <- gsub("\\."," ",batch_file$id.basic)
+batch_file$id.basic <- gsub("S44 ","",batch_file$id.basic)
+batch_file$id.basic <- gsub("  P*"," P", batch_file$id.basic)
+
+names(batch_file)[names(batch_file)=="id.basic"] <- "StudyID" 
+```
+
+### food
+```{r}
+food$day_numb <- ifelse(str_detect(food$StudyID,"Instrument"), str_extract(food$StudyID,"[0-9]+"),NA)
+
+food$StudyID <- gsub(".*Instrument", "Instrument", food$StudyID)
+food$StudyID <- gsub(".*_S44-", "", food$StudyID)
+food$StudyID <- gsub("(raw)", "", food$StudyID, fixed = T)
+food$StudyID <- gsub("-", " ", food$StudyID, fixed = T)
+food$StudyID <- gsub("  P*"," P", food$StudyID)
+```
+
+Checking Results
+```{r}
+Info_file$StudyID[1:5]
+batch_file$StudyID[1:5]
+food[30:35,1]
+```
+
+### Merging "food","Info_file","batch_file"
+```{r}
+new_merged <- merge(batch_file,Info_file, by="StudyID",all=T)
+new_merged <- merge(new_merged,food, by="StudyID",all=T)
+
+## remove incorrect duplicated QC values
+QC_ID <- new_merged[grepl("Instrument",new_merged$StudyID),]
+QC_ID <- QC_ID[QC_ID$batch==QC_ID$day_numb,]  
+new_merged <- new_merged[is.na(new_merged$day_numb),]
+new_merged <- rbind(new_merged,QC_ID)
+
+new_merged$day_numb <- NULL
+```
+
+### Adding two Health Outcomes of "HDL/LDL", and "Chol_T/HDL"
+```{r}
+complete_health_outcome$HDL_LDL <- complete_health_outcome$HDL/complete_health_outcome$LDL
+
+complete_health_outcome$Chol_T_HDL <- complete_health_outcome$Chol_T/complete_health_outcome$HDL
+```
+
+### Creating "health_outcome", which is the Difference in Outcomes within Each Trial
+```{r}
+outcomes <- c("SBP_total","DBP_total","Insulin","Chol_T","TG","LDL","HDL","CRP","ApoB","HDL_LDL","Chol_T_HDL")
+
+complete_health_outcome[,outcomes] <- apply(complete_health_outcome[,outcomes],2,function(x) as.numeric(as.character(x)))
+
+complete_health_outcome$StudyID <- gsub(".*-","",complete_health_outcome$StudyID)
+
+names_health <- as.character(unique(complete_health_outcome$StudyID))
+tmp.health <- diff_health <- tmp.health.dat <- c()
+
+for(j in names_health){
+  tmp.health <- complete_health_outcome[complete_health_outcome$StudyID==j,]
+  
+  for(k in 1:2){
+    if(sum(tmp.health$Trial == k) == 2){
+      tmp.health.dat <- tmp.health[tmp.health$Trial == k,] 
+      
+      tmp.health.dat <- (tmp.health.dat[grepl(max(tmp.health.dat$Period),tmp.health.dat$Period),outcomes])-
+        (tmp.health.dat[grepl(min(tmp.health.dat$Period),tmp.health.dat$Period),outcomes])
+
+      tmp.health.dat <- cbind(StudyID=j, Trial=k, tmp.health.dat)
+      
+      diff_health <- rbind(diff_health, tmp.health.dat)
+    }
+  }
+}
+```
+
+# Writting Out Results
+```{r}
+write.table(new_merged,
+            file="./merged_file.txt",row.names=T)
+write.table(diff_health,
+            file="./health_outcome.txt",row.names=T)
+write.table(complete_health_outcome,
+            file="./complete_health_outcome.txt",
+            row.names = T)
+write.table(met_info,
+            file="./met_info.txt",
+            row.names = T)
+```
